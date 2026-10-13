@@ -50,7 +50,7 @@ jobs:
   #
   init:
     name: Validate GitHub Workflow
-    uses: mapfre-tech/arch-ram-reusable-workflows/.github/workflows/validate.workflow.yml@v1
+    uses: luismuma/arch-ram-reusable-workflows-local/.github/workflows/validate.workflow.yml@main
 
     with:
       workflow_file: cdc.pull-request.yml
@@ -155,7 +155,7 @@ jobs:
       - name: Decrypt token
         if: needs.token-generate.outputs.centralized-tokens == 'true'
         id: decrypt
-        uses: mapfre-tech/action-ci-token/decrypt@v1
+        uses: luismuma/action-ci-token/decrypt@v1
         with:
           token: ${{ needs.token-generate.outputs.platform-token }}
           gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
@@ -186,10 +186,10 @@ jobs:
             clone \
             --filter=blob:none \
             --no-checkout \
-            https://github.com/mapfre-tech/ioeu-cdc-repo-piloto-cdc.git \
-            "$RUNNER_TEMP/ioeu-cdc-repo-piloto-cdc"
+            https://github.com/luismuma/ioeu-cdc-repo-piloto-cdc-local.git \
+            "$RUNNER_TEMP/ioeu-cdc-repo-piloto-cdc-local"
 
-          cd "$RUNNER_TEMP/ioeu-cdc-repo-piloto-cdc"
+          cd "$RUNNER_TEMP/ioeu-cdc-repo-piloto-cdc-local"
 
           git sparse-checkout init --no-cone
 
@@ -221,10 +221,10 @@ jobs:
           ls -l "$GITHUB_WORKSPACE/inventory_connections/"
 
       - name: Validate CDC Config (JSON Schema)
-        uses: mapfre-tech/action-validation-schema/json@v1
+        uses: luismuma/action-validation-schema/json@v1
         with:
           schema: workflow-schemas/cdc.pull-request.schema.yml
-          schema-repository: mapfre-tech/arch-ram-reusable-workflows
+          schema-repository: luismuma/arch-ram-reusable-workflows
           schema-repository-ref: ${{ needs.init.outputs.workflow_ref }}
           token: ${{ steps.decrypt.outputs.token || secrets.GH_GIT_TOKEN }}
           files: config-CDC/application/cdc_input_json_content.json
