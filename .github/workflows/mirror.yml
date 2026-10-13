@@ -1,0 +1,106 @@
+name: Mirror repository
+run-name: "Mirror repository #${{ github.run_number }} - ${{ github.event.head_commit.message }}"
+
+on:
+  workflow_call:
+    inputs:
+      org:
+        description: 'Target Github Org to mirror to. Allowed values: mapfre-test-pre, mapfre-lab'
+        required: true
+        type: string
+      repository:
+        description: 'Target repository name. Defaults to the source repository name if not provided.'
+        required: false
+        type: string
+        default: ''
+      runs-on:
+        description: 'Runner to use. Example: ["ubuntu-24.04-s"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      mirror-tags:
+        description: 'Whether to mirror tags to the target repository'
+        required: false
+        type: boolean
+        default: true
+      prune-branches:
+        description: 'Whether to prune branches in target that no longer exist in source'
+        required: false
+        type: boolean
+        default: true
+
+    secrets:
+      GH_MIRROR_TOKEN:
+        description: "Github Token for pushing to target repository"
+        required: true
+
+jobs:
+  validate:
+    name: Validate inputs
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    steps:
+      - name: Validate org
+        run: |
+          ALLOWED_ORGS="mapfre-test-pre mapfre-lab"
+          if ! echo "$ALLOWED_ORGS" | tr ' ' '\n' | grep -qx "${{ inputs.org }}"; then
+            echo "::error::Invalid org '${{ inputs.org }}'. Allowed values: ${ALLOWED_ORGS// /, }"
+            exit 1
+          fi
+
+  mirror:
+    name: Mirror repository to ${{ inputs.org }}
+    needs: validate
+    if: github.repository_owner != inputs.org
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    env:
+      TARGET_ORG: ${{ inputs.org }}
+      TARGET_REPO: ${{ inputs.repository || github.event.repository.name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup mirror remote
+        env:
+          GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
+        run: |
+          git config --unset-all http.https://github.com/.extraheader || true
+          git remote add mirror "https://x-access-token:${GH_MIRROR_TOKEN}@github.com/${TARGET_ORG}/${TARGET_REPO}"
+
+      - name: Push branches to mirror
+        env:
+          GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
+        run: |
+          FAILED_BRANCHES=""
+          for ref in $(git for-each-ref --format='%(refname)' refs/remotes/origin/ | grep -v HEAD); do
+            branch="${ref#refs/remotes/origin/}"
+            if git push --force mirror "${ref}:refs/heads/${branch}" 2>&1; then
+              echo "✓ Pushed branch '${branch}'"
+            else
+              echo "::warning::Failed to push branch '${branch}' to mirror"
+              FAILED_BRANCHES="${FAILED_BRANCHES} ${branch}"
+            fi
+          done
+          if [ -n "$FAILED_BRANCHES" ]; then
+            echo "::warning::Some branches failed to push:${FAILED_BRANCHES}"
+          fi
+
+      - name: Push tags to mirror
+        if: inputs.mirror-tags
+        env:
+          GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
+        run: |
+          if ! git push --force mirror --tags 2>&1; then
+            echo "::warning::Failed to push some tags to mirror"
+          fi
+
+      - name: Prune stale branches in mirror
+        if: inputs.prune-branches
+        env:
+          GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
+        run: |
+          if ! git push mirror --prune "refs/remotes/origin/*:refs/heads/*" 2>&1; then
+            echo "::warning::Failed to prune stale branches in mirror"
+          fi

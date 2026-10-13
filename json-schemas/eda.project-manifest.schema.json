@@ -1,0 +1,38 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "version": {
+            "type": "string"
+        },
+        "name": {
+            "type": "string"
+        },
+        "description": {
+            "type": "string"
+        },
+        "archetype": {
+            "type": "object",
+            "required": [ "version" ],
+            "properties": {
+                "version": {
+                    "type": "string" 
+                }
+            }
+        },
+        "platform": {
+            "type": "string"
+        },
+        "owner": {
+            "type": "string"
+        },
+        "technicalManager": {
+            "type": "string"
+        },
+        "country": {
+            "type": "string"
+        }
+    },
+    "required": ["version", "name", "description", "platform", "owner", "technicalManager", "country"],
+    "additionalProperties": false
+}

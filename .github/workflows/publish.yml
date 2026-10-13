@@ -1,0 +1,23 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+name: Publish Workflow
+run-name: "Publish Workflow #${{ github.run_number }} - ${{ github.event.head_commit.message }}"
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  
+jobs:
+  publish-action:
+    runs-on: 'ubuntu-24.04'
+    name: Publish Workflow
+    steps:   
+      - uses: mapfre-tech/action-publish@v1  
+        with:
+          app-semantic-release-id: ${{ secrets.APP_SEMANTIC_RELEASE_ID }}
+          app-semantic-release-private-key: ${{ secrets.APP_SEMANTIC_RELEASE_PRIVATE_KEY  }}

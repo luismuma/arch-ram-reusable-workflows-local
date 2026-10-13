@@ -1,0 +1,76 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "version": {
+            "type": "string"
+        },
+        "liquibaseVersion": {
+            "type": "string"
+        },
+        "name": {
+            "type": "string"
+        },
+        "description": {
+            "type": "string"
+        },
+        "archetype": {
+            "type": "object",
+            "required": [ "version" ],
+            "properties": {
+                "version": {
+                    "type": "string" 
+                }
+            }
+        },
+        "databases": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["mysql", "postgresql", "oracle", "db2"]
+                    },
+                    "driver_group_id": {
+                        "type": "string"
+                    },
+                    "driver_artifact_id": {
+                        "type": "string"
+                    },
+                    "driver_version": {
+                        "type": "string"
+                    },
+                    "driver": {
+                        "type": "string"
+                    },
+                    "github_secrets": {
+                        "type": "object",
+                        "properties": {
+                            "host": {
+                                "type": "string"
+                            },
+                            "port": {
+                                "type": "string"
+                            },
+                            "username": {
+                                "type": "string"
+                            },
+                            "password": {
+                                "type": "string"
+                            }
+                        },
+                        "required": ["host", "port", "username", "password"]
+                    }
+                },
+                "required": ["dbname", "type"],
+                "additionalProperties": false
+            }
+        }
+    },
+    "required": ["version", "name", "description", "databases"],
+    "additionalProperties": false
+}

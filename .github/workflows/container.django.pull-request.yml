@@ -1,0 +1,242 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Pull Request Workflow. Triggers when:
+#   - A pull request from feature to develop is created / synchronized
+#   - A pull request from hotfix to main is created / synchronized
+#
+# Required secrets:
+#   - ACR_TOKEN_USER          (Organization)
+#   - ACR_TOKEN_PW            (Organization)
+#   - SONAR_TOKEN             (Repository) Secret with the SonarQube token
+#   - RAM_GITHUB_GIT_TOKEN    (Repository)
+
+name: PR workflow
+run-name: "Build and Test #${{ github.run_number }}: ${{ github.event.pull_request.title }}"
+
+on:
+  workflow_call:
+    inputs:
+      sonar-host-url:
+        description: 'Sonar Host URL'
+        required: false
+        type: string
+        default: ''
+      sonar-project-key:
+        description: 'Sonar Project Key'
+        required: false
+        type: string
+        default: ''
+      sonar-project-name:
+        description: 'Sonar Project Name'
+        required: false
+        type: string
+        default: ''
+      sonar-version:
+        description: 'Sonar Scanner CLI version'
+        required: false
+        type: string
+        default: '10.0'
+      sonar-params:
+        description: 'Sonar Scanner CLI params'
+        required: false
+        type: string
+        default: '-Dsonar.qualitygate.wait=false -Dsonar.sourceEncoding=UTF-8 -Dsonar.python.coverage.reportPaths=coverage.xml  -Dsonar.sources=docker,sources'
+      python-version:
+        description: 'Python version'
+        required: false
+        type: string
+        default: '3.11'
+      poetry-version:
+        description: 'Poetry version'
+        required: false
+        type: string
+        default: '2.1.1'
+      source-folder:
+        description: 'Source Folder'
+        required: false
+        type: string
+        default: 'sources'
+      runs-on-sonar:
+        description: 'runs-on to use for Sonar job. Example: ["ubuntu-latest"], ["self-hosted", "mar", "dev"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+
+    secrets:
+      SONAR_TOKEN:
+        description: 'Sonar Token'
+        required: false
+      ACR_TOKEN_USER:
+        description: 'User ACR'
+        required: true
+      ACR_TOKEN_PW:
+        description: 'Password ACR'
+        required: true
+      GH_GIT_TOKEN:
+        description: 'GitHub Token for checking out the code'
+        required: false
+      AZURE_ARTIFACTS_USER:
+        description: 'User Azure Artifacts'
+        required: true
+      AZURE_ARTIFACTS_PW:
+        description: 'Password Azure Artifacts'
+        required: true
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+
+jobs:
+
+  # Generate centralized tokens if needed
+  token-generate:
+   if: ( contains(github.event.pull_request.head.ref, 'feature/') || contains(github.event.pull_request.head.ref, 'hotfix/') )
+   uses: ./.github/workflows/token-generate.yml 
+   with:
+      profile: 'reader'
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+     needs: token-generate
+     uses: ./.github/workflows/validate-workflow.yml
+     with:
+        workflow_file: 'pull-request.yml'
+        schema: 'container.django.pull-request.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.GH_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ init, token-generate ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  pull-request:
+    name: Build and Test
+    needs: init
+    runs-on: ubuntu-latest
+    outputs:
+      sonar-project-configured: ${{ inputs.sonar-project-key != '' && inputs.sonar-project-name != '' }}
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python ${{ inputs.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Setup Poetry ${{ inputs.poetry-version }}
+        run: |
+          pip install poetry==${{ inputs.poetry-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.source-folder }}
+        run: |
+          poetry config http-basic.azure ${{ secrets.AZURE_ARTIFACTS_USER }} ${{ secrets.AZURE_ARTIFACTS_PW }}
+          poetry install
+
+      # Run tests from root to generate relative paths in coverage report
+      - name: Test
+        run: |
+          poetry -C sources run pytest --cov-report=xml:../coverage.xml
+          poetry -C sources run coverage report -m
+
+      # Validamos la versión con el tag que tendremos que crear en Main. Si ya existe ese tag, no validamos
+      - name: read-name
+        id: read-name
+        uses: SebRollen/toml-action@v1.2.0
+        with:
+          file: '${{ inputs.source-folder }}/pyproject.toml'
+          field: 'project.name'
+
+      - name: read-version
+        id: read-version
+        uses: SebRollen/toml-action@v1.2.0
+        with:
+          file: '${{ inputs.source-folder }}/pyproject.toml'
+          field: 'project.version'
+
+      # - name: Check for Tag
+      #   run: |
+      #     TAG="${{ steps.read-version.outputs.value }}"
+
+      #     git fetch --tags --force
+      #     if git show-ref --tags --verify "refs/tags/${TAG}"; then
+      #       echo "Tag ${TAG} exists"
+      #       exit 1
+      #     else
+      #       echo "Tag ${TAG} does not exist"
+      #     fi
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: acrmapfredevops.azurecr.io
+          username: ${{ secrets.ACR_TOKEN_USER }}
+          password: ${{ secrets.ACR_TOKEN_PW }}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          tags: test
+
+          secrets: |
+            AZURE_ARTIFACTS_PW=${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      # Upload files generated at Build/Test phase and required for sonar scanner step
+      - name: "Upload Build/Test Generated Files"
+        uses: actions/upload-artifact@v7
+        with:
+          name: "required-sonar-scanner-generated-files"
+          path: |
+            coverage.xml
+          retention-days: 1
+
+  # Code Quality/Sonar job
+  code-quality:
+    name: Code Quality (Sonar)
+    needs: pull-request
+    runs-on: ${{ fromJSON(inputs.runs-on-sonar) }}
+    container:
+      image: acrmapfredevops.azurecr.io/mapfre/global/sonar-scanner-cli:${{ inputs.sonar-version }}
+      options: --user root
+      credentials:
+        username: ${{ secrets.ACR_TOKEN_USER}}
+        password: ${{ secrets.ACR_TOKEN_PW }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: "Download Build/Test Generated Files"
+        uses: actions/download-artifact@v6
+        with:
+          name: "required-sonar-scanner-generated-files"
+          path: .
+
+      - name: Test
+        run: |
+          sed -i 's/<source>.<\/source>/<source>.<\/source><source>sources<\/source>/g' coverage.xml
+
+      - name: SonarQube Scanner - CLI
+        id: scanner-cli
+        continue-on-error: true
+        uses: mapfre-tech/action-sonarqube/scanner-cli@v1
+        with:
+          hostURL: ${{ inputs.sonar-host-url }}
+          projectKey: ${{ inputs.sonar-project-key }}
+          projectName: ${{ inputs.sonar-project-name }}
+          authToken: ${{ secrets.SONAR_TOKEN }}
+          checkQualityGate: 'true'
+          params: ${{ inputs.sonar-params }}

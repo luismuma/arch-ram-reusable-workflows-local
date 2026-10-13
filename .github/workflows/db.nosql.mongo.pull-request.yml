@@ -1,0 +1,318 @@
+name: PR workflow
+run-name: "Test #${{ github.run_number }}: ${{ github.event.pull_request.title }}"
+
+on:  
+  workflow_call:
+    inputs:
+      sonar-project-key: 
+        description: 'Sonar Project Key'
+        required: false
+        type: string
+        default: ''
+      sonar-project-name:
+        description: 'Sonar Project Name'
+        required: false
+        type: string
+        default: ''    
+      sonar-host-url:
+        description: 'Sonar Host URL'
+        required: false
+        type: string
+        default: 'https://codereview.azure.mapfre.com'
+      sonar-params:
+        description: 'Sonar scanner CLI params'
+        required: false
+        type: string
+        default: '-Dsonar.qualitygate.wait=false -Dsonar.sourceEncoding=UTF-8 -Dsonar.sources=sources'
+      sonar-version:
+        description: 'Sonar Scanner CLI version'
+        required: false
+        type: string
+        default: '10.0'
+      runs-on-sonar:
+        description: 'runs-on to use for Sonar job. Example: ["ubuntu-latest"], ["self-hosted", "mar", "dev"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      manifest-file:
+        description: 'Manifest file'
+        required: false
+        type: string
+        default: 'project-manifest.json'
+      log-level:
+        description: 'Liquibase Log Level'
+        required: false
+        type: string
+        default: 'INFO'
+      strict:
+        description: 'Liquibase Strict Mode'
+        required: false
+        type: boolean
+        default: true
+      context-filter:
+        description: 'Liquibase Context'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      SONAR_TOKEN:
+        description: 'Sonar Token'
+        required: false  
+      ACR_TOKEN_USER:
+        description: 'User ACR'
+        required: true
+      ACR_TOKEN_PW:
+        description: 'Password ACR'
+        required: true
+      GH_GIT_TOKEN:
+        description: 'GitHub Token for checking out the code'
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+
+env:
+  ROOT_CONFIG: |
+    {
+      "mongodb": {
+        "image": "mongodb/mongodb-atlas-local:8",
+        "url_prefix": "mongodb://",
+        "java_drivers_version": "5.5.0",
+        "liquibase_version": "4.31.1",
+        "driver": "liquibase.ext.mongodb.database.MongoClientDriver",
+        "port": "27017",
+        "user": "liquibase",
+        "password": "liquibase"
+      }
+    }
+      
+
+jobs:
+
+  # Generate centralized tokens if needed
+  token-generate:
+   if: ( contains(github.event.pull_request.head.ref, 'feature/') || contains(github.event.pull_request.head.ref, 'hotfix/') )
+   uses: ./.github/workflows/token-generate.yml 
+   with:
+      profile: 'reader'
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+     needs: token-generate
+     uses: ./.github/workflows/validate-workflow.yml
+     with:
+        workflow_file: 'pull-request.yml'
+        schema: 'db.nosql.mongo.pull-request.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.GH_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ pull-request, token-generate ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  prepare:
+    needs: [init, token-generate]
+    name:  Prepare Test 
+    runs-on: ubuntu-latest   
+    outputs:
+      matrix: ${{ steps.create-config.outputs.matrix }}      
+    steps:    
+
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+     
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Validate ${{inputs.manifest-file}} (JSON Schema)
+        uses: mapfre-tech/action-validation-schema/json@v1
+        with:             
+            schema: json-schemas/db.nosql.mongo.project-manifest.schema.json
+            schema-repository: mapfre-tech/arch-ram-reusable-workflows
+            schema-repository-ref: ${{ needs.init.outputs.workflow_ref }}
+            token: ${{ steps.decrypt.outputs.token || secrets.GH_GIT_TOKEN }}
+            files: ${{inputs.manifest-file}}
+            
+      - name: Policy Checks
+        uses: mapfre-tech/action-liquibase-policy-check@v1
+        with:
+          check-tag-database: true
+          check-rollback: true
+          sources: sources
+          only-warning: false       
+
+      - name: Create config matrix
+        id: create-config
+        run: |
+          # Read the JSON files into variables
+          COMPONENTS=$(<"${{inputs.manifest-file}}") 
+
+          DATABASES=$(jq -c -n --argjson components "$COMPONENTS" --argjson rc "$ROOT_CONFIG" '
+              $components.databases | to_entries | map(
+                  . + { root_config: ($rc[.value.type] // {}) } | {
+                      path: .key,
+                      type: .value.type,
+                      dbname: .value.dbname,
+                      image: (.root_config.image // ""),                      
+                      java_drivers_version: (.root_config.java_drivers_version // ""),
+                      liquibase_version: (.root_config.liquibase_version // ""),
+                      driver: (.root_config.driver // ""),
+                      url_prefix: (.root_config.url_prefix // ""),
+                      port: (.root_config.port // ""),
+                      user: (.root_config.user // ""),
+                      password: (.root_config.password // "")                      
+                  }
+              )
+          ')
+          echo "matrix={\"database\": $DATABASES }" >> $GITHUB_OUTPUT
+          cat $GITHUB_OUTPUT
+
+  pull-request:
+    needs: [prepare, token-generate]
+    name: Test (${{matrix.database.path}}/${{matrix.database.type}})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+      max-parallel: 10
+      fail-fast: false
+    outputs:
+      sonar-project-configured: ${{ inputs.sonar-project-key != '' && inputs.sonar-project-name != '' }}
+    env:
+      URL: ${{ format('{0}test-db:{1}/{2}', matrix.database.url_prefix , matrix.database.port,  matrix.database.dbname) }}  
+      URL_LOCALHOST: ${{ format('{0}localhost:{1}/{2}', matrix.database.url_prefix , matrix.database.port,  matrix.database.dbname) }}  
+    services:
+      test-db:      
+        image: ${{ matrix.database.image }}
+        env:
+          MONGODB_INITDB_ROOT_USERNAME: root
+          MONGODB_INITDB_ROOT_PASSWORD: root
+          MONGODB_INITDB_DATABASE: ${{matrix.database.dbname}}
+        ports: 
+          - ${{ matrix.database.port }}:${{ matrix.database.port }}
+        options: >-
+          --health-cmd "echo 'db.runCommand("ping").ok' | mongosh --quiet"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 3
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Init MongoDB
+        run: |
+           wget -qO- https://www.mongodb.org/static/pgp/server-8.0.asc | sudo tee /etc/apt/trusted.gpg.d/server-8.0.asc
+           echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+           sudo apt-get update
+           sudo apt-get install -y mongodb-mongosh
+
+           mongosh "${URL_LOCALHOST}" --username root --password root --authenticationDatabase admin <<'EOF'
+            use ${{matrix.database.dbname}};
+            db.createUser({
+                user: "liquibase",
+                pwd: "liquibase",
+                roles: [
+                    { role: "dbOwner", db: "${{matrix.database.dbname}}" }
+                ]
+            });
+           EOF
+      - name: Download MongoDB drivers
+        id: download-drivers
+        run: |
+          mkdir -p ./packages/lib
+          echo "[+] Downloading MongoDB OSS Extension for Liquibase"
+          curl -L -o ./packages/lib/liquibase-mongodb-${{matrix.database.liquibase_version }}.jar https://github.com/liquibase/liquibase-mongodb/releases/download/v${{matrix.database.liquibase_version }}/liquibase-mongodb-${{matrix.database.liquibase_version }}.jar
+
+          urls=(
+          "https://repo1.maven.org/maven2/org/mongodb/bson/${{ matrix.database.java_drivers_version }}/bson-${{ matrix.database.java_drivers_version }}.jar"
+          "https://repo1.maven.org/maven2/org/mongodb/mongodb-driver-core/${{ matrix.database.java_drivers_version }}/mongodb-driver-core-${{ matrix.database.java_drivers_version }}.jar"
+          "https://repo1.maven.org/maven2/org/mongodb/mongodb-driver-sync/${{ matrix.database.java_drivers_version }}/mongodb-driver-sync-${{ matrix.database.java_drivers_version }}.jar"
+          )
+
+          for url in "${urls[@]}"; do
+            echo "[+] Downloading JAR: $url"
+            curl -f -o ./packages/lib/$(basename "$url") "$url"            
+          done
+          
+          JARS=$(find ./packages/lib/ -type f -name "*.jar" | paste -sd ":" -)
+          echo "classpath=$JARS" >> $GITHUB_OUTPUT
+      - name: liquibase validate
+        uses: liquibase-github-actions/validate@v4.33.0
+        with:          
+          driver: ${{ matrix.database.driver }}
+          classpath: ${{ steps.download-drivers.outputs.classpath }}
+          changelogFile: /sources/${{ matrix.database.path }}/master.xml
+          username: ${{ matrix.database.user}}
+          password: ${{ matrix.database.password}}
+          url: ${{ env.URL }}
+          headless: true
+          logLevel: ${{ inputs.log-level }}
+          strict: ${{ inputs.strict }}
+          contextFilter: ${{ inputs.context-filter }}
+
+      - name: liquibase update-testing-rollback
+        uses: liquibase-github-actions/update-testing-rollback@v4.33.0
+        with:
+          driver: ${{ matrix.database.driver }}
+          classpath: ${{ steps.download-drivers.outputs.classpath }}
+          changelogFile: /sources/${{ matrix.database.path }}/master.xml
+          username: ${{ matrix.database.user}}
+          password: ${{ matrix.database.password}}
+          url: ${{ env.URL }}
+          headless: true
+          logLevel: ${{ inputs.log-level }}
+          strict: ${{ inputs.strict }}
+          contextFilter: ${{ inputs.context-filter }}
+
+      - name: liquibase history
+        uses: liquibase-github-actions/history@v4.33.0
+        with:
+          driver: ${{ matrix.database.driver }}
+          classpath: ${{ steps.download-drivers.outputs.classpath }}      
+          username: ${{ matrix.database.user}}
+          password: ${{ matrix.database.password}}
+          url: ${{ env.URL }}
+          headless: true
+          logLevel: ${{ inputs.log-level }}          
+
+  # Code Quality/Sonar job
+  code-quality:
+    name: Code Quality (Sonar)
+    needs: pull-request
+    if: fromJSON(needs.pull-request.outputs.sonar-project-configured)
+    runs-on: ${{ fromJSON(inputs.runs-on-sonar) }}
+    container:
+      image: acrmapfredevops.azurecr.io/mapfre/global/sonar-scanner-cli:${{ inputs.sonar-version }}
+      options: --user root
+      credentials:
+        username: ${{ secrets.ACR_TOKEN_USER }}
+        password: ${{ secrets.ACR_TOKEN_PW }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: SonarQube Scanner - CLI
+        id: scanner-cli
+        uses: mapfre-tech/action-sonarqube/scanner-cli@v1
+        with:
+          hostURL: ${{ inputs.sonar-host-url }}
+          projectKey: ${{ inputs.sonar-project-key }}
+          projectName: ${{ inputs.sonar-project-name }}
+          authToken: ${{ secrets.SONAR_TOKEN }}
+          checkQualityGate: 'true'
+          params: ${{ inputs.sonar-params }}

@@ -1,0 +1,58 @@
+type: map
+mapping:
+  name:
+    type: str
+    required: true
+  run-name:
+    type: str
+    required: true
+  on:
+    type: map
+    mapping:
+      pull_request:
+        type: map
+        mapping:
+          types:
+            type: seq
+            sequence:
+              - type: str
+          branches:
+            type: seq
+            sequence:
+              - type: str
+  jobs:
+    type: map
+    mapping:
+      pull-request:
+        type: map
+        mapping:
+          name:
+            type: str
+            required: true
+          uses:
+            type: str
+            required: true
+          with:
+            type: map
+            mapping:
+              manifest-file:
+                type: str
+                required: false
+              runs-on-sonar:
+                type: str
+                required: false                
+          secrets:
+            type: map
+            mapping:
+              AZURE_ARTIFACTS_USER:
+                type: str
+                required: true
+              AZURE_ARTIFACTS_PW:
+                type: str
+                required: true
+              GH_GIT_TOKEN:
+                type: str
+                required: false
+              GH_TOKEN_ENCRYPTION_PASSPHRASE:
+                type: str
+                required: false

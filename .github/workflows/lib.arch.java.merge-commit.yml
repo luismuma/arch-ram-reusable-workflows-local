@@ -1,0 +1,448 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Merge Commit Workflow. Triggers when:
+#   - A pull request to develop is closed and merged
+#   - A pull request to main is closed and merged
+#
+# Required secrets:
+#   - AZURE_ARTIFACTS_USER    (Organization)
+#   - AZURE_ARTIFACTS_PW      (Organization)
+#   - RAM_GITHUB_GIT_TOKEN    (Repository)
+
+name: Merge Commit
+run-name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact #${{ github.run_number }}"
+
+on:   
+  workflow_call:
+    inputs:
+      java-version:
+        description: 'Java Version'
+        required: false
+        type: string
+        default: '21'        
+      java-extra-args:
+        description: 'Java Extra Args'
+        required: false
+        type: string
+        default: '-Dsource.skip -DskipTests -Dcobertura.skip'
+      jdk-distribution:
+        description: 'JDK Distribution'
+        required: false
+        type: string
+        default: 'temurin'
+      maven-version:
+        description: 'Maven Version'
+        required: false
+        type: string
+        default: '3.9.6'
+      cache-enabled:
+        description: 'Cache Enabled'
+        required: false
+        type: boolean
+        default: true
+      source-folder:
+        description: 'Source Folder'
+        required: false
+        type: string
+        default: 'sources'
+      next-snapshot-create-pull-request:
+        description: 'Create Pull Request to develop'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      AZURE_ARTIFACTS_USER: 
+        description: 'User Azure Artifacts' 
+        required: true
+      AZURE_ARTIFACTS_PW: 
+        description: 'Password Azure Artifacts'
+        required: true
+      RAM_GITHUB_GIT_TOKEN: 
+        description: 'GitHub Token for creating Pull Request to develop'
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+      APP_SEMANTIC_RELEASE_ID:
+        description: "User Semantic Release App"
+        required: true
+      APP_SEMANTIC_RELEASE_PRIVATE_KEY:
+        description: "Password Semantic Release App"
+        required: true
+
+
+jobs:
+
+  # Generate centralized tokens if needed
+  token-generate:
+   #https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#running-your-pull_request_target-workflow-when-a-pull-request-merges
+   if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }} 
+   uses: ./.github/workflows/token-generate.yml  
+   with:
+      profile: 'deployer'
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+     needs: token-generate
+     uses: ./.github/workflows/validate-workflow.yml
+     with:
+        workflow_file: 'merge-commit.yml'
+        schema: 'lib.arch.java.merge-commit.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  merge-commit:
+    name: "Prepare ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact"
+    if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }}
+    needs: [ init, token-generate ]
+    runs-on: ubuntu-latest
+    outputs:
+      current_version: ${{ steps.read-version.outputs.value }}
+      release_created: "${{ steps.release.outputs.release_created || 'false'  }}"
+      is_release: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+      is_snapshot: ${{ fromJson(github.base_ref == 'develop') }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Generate GitHub Token From Semantic Release
+      - name: "Generate token (for Release Please)"
+        id: generate_token
+        if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_SEMANTIC_RELEASE_ID }}
+          private_key: ${{ secrets.APP_SEMANTIC_RELEASE_PRIVATE_KEY }}
+
+      # Run Google Release Please action:
+      - uses: googleapis/release-please-action@v4
+        name: Release Please
+        id: release
+        if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          target-branch: ${{ github.base_ref || github.ref_name  }}
+          release-type: maven
+      
+      - name: Show release info
+        if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        run: |
+          echo "Release created: ${{ steps.release.outputs.release_created || 'false'  }}"
+          echo "Release version: ${{ steps.release.outputs.release_version || 'false'  }}"
+
+  # 1 - Construye y publica el artefacto
+  #   1.1 - Construye el paquete con poetry
+  #   1.2 - Sube el paquete construido al source configurado
+  do-release-snapshot:
+    needs: 
+      - init
+      - merge-commit
+      - token-generate
+    if: ${{ fromJson(needs.merge-commit.outputs.is_snapshot) || fromJSON(needs.merge-commit.outputs.release_created) }}
+    name: "Generate ${{ fromJson(needs.merge-commit.outputs.is_release) && 'Release' || 'Snapshot' }} Artifact"
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+      - name: Setup Java/Maven
+        uses: mapfre-tech/action-java-maven/setup@v1
+        with:
+          java-version: ${{ inputs.java-version }}
+          jdk-distribution: ${{ inputs.jdk-distribution }}
+          maven-version: ${{ inputs.maven-version }}
+          cache-enabled: ${{ inputs.cache-enabled }}
+        
+      - name: Read POM
+        id: read-pom
+        uses: mapfre-tech/action-java-maven/read-pom@v1
+        with:          
+          workspace: ${{ inputs.source-folder }}   
+          azure-artifact-user: ${{ secrets.AZURE_ARTIFACTS_USER }}
+          azure-artifact-pw: ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      - name: Update Installation Version in README
+        id: update-installation-version
+        if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        shell: bash
+        env:
+          VERSION: ${{ steps.read-pom.outputs.version }}
+          SOURCE_FOLDER: ${{ inputs.source-folder }}
+        run: |
+          README="README.md"
+          POM="${SOURCE_FOLDER}/pom.xml"
+
+          if [ ! -f "$README" ]; then
+            echo "README.md not found; skipping installation version update"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          GROUP_ID=$(sed -nE 's|.*<groupId>[[:space:]]*([^<]+)[[:space:]]*</groupId>.*|\1|p' "$POM" | head -n 1 | xargs)
+          ARTIFACT_ID=$(sed -nE 's|.*<artifactId>[[:space:]]*([^<]+)[[:space:]]*</artifactId>.*|\1|p' "$POM" | head -n 1 | xargs)
+
+          if [ -z "$GROUP_ID" ] || [ -z "$ARTIFACT_ID" ]; then
+            echo "Could not resolve groupId/artifactId from pom.xml"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          awk -v group="$GROUP_ID" -v artifact="$ARTIFACT_ID" -v version="$VERSION" '
+            BEGIN { in_dependency=0; dependency=""; changed=0 }
+
+            !in_dependency && /<dependency>/ {
+              in_dependency=1
+              dependency=$0 ORS
+              next
+            }
+
+            in_dependency {
+              dependency=dependency $0 ORS
+              if (/<\/dependency>/) {
+                dependency_compact=dependency
+                gsub(/[[:space:]]/, "", dependency_compact)
+                if (index(dependency_compact, "<groupId>" group "</groupId>") && index(dependency_compact, "<artifactId>" artifact "</artifactId>")) {
+                  if (sub(/<version>[^<]+<\/version>/, "<version>" version "</version>", dependency)) {
+                    changed=1
+                  }
+                }
+
+                printf "%s", dependency
+                in_dependency=0
+                dependency=""
+              }
+              next
+            }
+
+            { print }
+
+            END {
+              if (in_dependency) {
+                printf "%s", dependency
+              }
+              exit changed ? 0 : 2
+            }
+          ' "$README" > README.md.tmp
+
+          RESULT=$?
+          if [ "$RESULT" -eq 0 ]; then
+            mv README.md.tmp "$README"
+            echo "Updated README dependency version for ${GROUP_ID}:${ARTIFACT_ID} to ${VERSION}"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$RESULT" -eq 2 ]; then
+            rm -f README.md.tmp
+            echo "No README dependency snippet found for ${GROUP_ID}:${ARTIFACT_ID}; skipping"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            rm -f README.md.tmp
+            exit "$RESULT"
+          fi
+
+      - name: Build
+        uses: mapfre-tech/action-java-maven/package@v1
+        with:          
+          workspace: ${{ inputs.source-folder }}
+          extra-args: ${{ inputs.java-extra-args }} 
+          azure-artifact-user: ${{ secrets.AZURE_ARTIFACTS_USER }}
+          azure-artifact-pw: ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      - name: Unit Test
+        uses: mapfre-tech/action-java-maven/junit@v1
+        with:
+          workspace: ${{ inputs.source-folder }}
+          azure-artifact-user: ${{ secrets.AZURE_ARTIFACTS_USER }}
+          azure-artifact-pw: ${{ secrets.AZURE_ARTIFACTS_PW }}
+          
+      - name: Update Coverage Badge in README
+        id: update-coverage-badge
+        if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        shell: bash
+        run: |
+          ROOT="${{ inputs.source-folder }}"
+          FILE=$(find "$ROOT" -maxdepth 6 -type f -iname "jacoco*.xml" | head -n 1 || true)
+          if [ -z "$FILE" ]; then
+            echo "No JaCoCo XML report found under $ROOT"
+            exit 1
+          fi
+          echo "Using JaCoCo report: $FILE"
+          # Saca la línea con counter type="INSTRUCTION"
+          LINE=$(grep 'counter type="INSTRUCTION"' "$FILE" | head -n 1)
+          MISSED=$(echo "$LINE" | sed -E 's/.*missed="([0-9]+)".*/\1/')
+          COVERED=$(echo "$LINE" | sed -E 's/.*covered="([0-9]+)".*/\1/')
+          TOTAL=$((MISSED + COVERED))
+          PCT=$((100 * COVERED / TOTAL))
+          echo "Coverage: $PCT%"
+
+          # Decide color based on thresholds
+          if (( PCT >= 90 )); then COLOR="brightgreen";
+          elif (( PCT >= 75 )); then COLOR="green";
+          elif (( PCT >= 60 )); then COLOR="yellow";
+          else COLOR="orange"; fi
+
+          # Escape percent for URL
+          url_pct="${PCT}%25"
+          badge="![coverage](https://img.shields.io/badge/coverage-${url_pct}-${COLOR})"
+
+          # Replace content between markers in README (supports inline and multiline markers)
+          awk -v badge="$badge" '
+            # 1) Inline replacement when START and END are on the same line
+            /<!-- COVERAGE-BADGE:START -->/ && /<!-- COVERAGE-BADGE:END -->/ {
+              sub(/<!-- COVERAGE-BADGE:START -->.*<!-- COVERAGE-BADGE:END -->/, "<!-- COVERAGE-BADGE:START --> " badge " <!-- COVERAGE-BADGE:END -->");
+              print; next
+            }
+
+            # 2) Fallback: multiline markers (START and END in líneas diferentes)
+            BEGIN { inblk=0; }
+            /<!-- COVERAGE-BADGE:START -->/ { inblk=1; print; print badge; next }
+            /<!-- COVERAGE-BADGE:END -->/ { inblk=0; print; next }
+            { if (!inblk) print }
+          ' README.md > README.md.tmp && mv README.md.tmp README.md
+          
+          echo "coverage=$PCT" >> "$GITHUB_OUTPUT"
+
+      - name: Sync docs content
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/content
+          cp -f CHANGELOG.md docs/content/CHANGELOG.md
+          cp -f README.md docs/content/index.md
+
+      - name: Update README.md (Push Commit)
+        uses: mapfre-tech/action-git/commit-push@v1
+        if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        with:
+          filename: README.md docs/content/CHANGELOG.md docs/content/index.md
+          message: "chore: update README for release ${{ steps.read-pom.outputs.version }}"
+          branch: ${{github.base_ref}}
+          github-token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+      
+      - name: Publish
+        uses: mapfre-tech/action-java-maven/publish@v1
+        with:
+          workspace: ${{ inputs.source-folder }}
+          azure-artifact-user: ${{ secrets.AZURE_ARTIFACTS_USER }}
+          azure-artifact-pw: ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+
+ 
+
+  to-next-version-flow:
+    needs:
+      - init
+      - merge-commit
+      - do-release-snapshot
+      - token-generate
+    if: ${{ fromJson(needs.merge-commit.outputs.is_release) || fromJSON(needs.merge-commit.outputs.release_created) }}
+    name: "Promotion Next ${{ fromJson(needs.merge-commit.outputs.is_release) && 'Release' || 'Snapshot' }} Artifact"
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+      - name: Find next SNAPSHOT PR
+        id: find_pr
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const prs = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: "open",
+              base: "main"
+            });
+
+            const snapshots = prs.data
+              .filter(pr =>
+                pr.head.ref.startsWith("release-please--") &&
+                pr.title.includes("-SNAPSHOT")
+              )
+              .sort((a, b) => b.number - a.number);
+
+            const snapshotPr = snapshots[0];
+
+            if (!snapshotPr) {
+              core.setOutput("found", "false");
+            } else {
+              core.setOutput("found", "true");
+              core.setOutput("number", snapshotPr.number.toString());
+              core.setOutput("branch", snapshotPr.head.ref);
+            }
+
+      - name: Merge next SNAPSHOT PR
+        if: ${{ steps.find_pr.outputs.found == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        run: |
+          gh pr merge ${{ steps.find_pr.outputs.number }} --squash --admin
+
+      
+      - name: Delete next SNAPSHOT branch
+        if: ${{ steps.find_pr.outputs.found == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        run: |
+          gh api \
+            -X DELETE \
+            repos/${{ github.repository }}/git/refs/heads/${{ steps.find_pr.outputs.branch }}
+
+
+      - name: git-configure
+        shell: bash
+        run: |
+          : git-configure
+          git config --local user.name mapfre-github-actions[bot]
+          git config --local user.email mapfre-github-actions[bot]@users.noreply.github.com
+
+      # Push commit with new version
+      - name: Merge main/master into develop (Automerge)
+        if: ${{ fromJson(needs.merge-commit.outputs.is_release) && fromJson(needs.merge-commit.outputs.release_created) }}
+        run: |
+          git fetch origin
+          git checkout develop
+          git merge --no-ff origin/${{ github.base_ref }} --no-edit
+          git push origin develop
+        env:
+          GITHUB_TOKEN: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+      
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ token-generate, to-next-version-flow ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+

@@ -1,0 +1,130 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Archetype Publish Workflow. Triggers when:
+#   - A pull request to main is closed and merged
+#
+
+name: Publish Archetype
+run-name: "Publish Archetype - #${{ github.run_number }} - ${{ github.event.head_commit.message }}"
+
+on:
+  workflow_call:
+    inputs:
+      release-branch:
+        description: 'Default release branch'
+        required: false
+        type: string
+        default: main
+      release-type:
+        description: 'Release Please Action Type'
+        required: false
+        type: string
+        default: simple
+      archetype-version-file:
+        description: 'File where the archetype version is defined. Accepted values: [`pom.xml.ftl`, `pyproject.toml.ftl`, `package.json.ftl`, `project-manifest.json.ftl`, `Directory.Build.props.ftl`]'
+        type: string
+        required: true
+    secrets:
+      app-semantic-release-id:
+        description: 'APP\_SEMANTIC\_RELEASE\_ID secret'
+        required: true
+      app-semantic-release-private-key:
+        description: 'APP\_SEMANTIC\_RELEASE\_PRIVATE_KEY secret'
+        required: true
+
+jobs:
+  validate-inputs:
+    runs-on: 'ubuntu-latest'
+    steps:
+      - name: Validate archetype-version-file
+        run: |
+          case "${{ inputs.archetype-version-file }}" in
+            pom.xml.ftl|pyproject.toml.ftl|package.json.ftl|project-manifest.json.ftl|Directory.Build.props.ftl)
+              echo "Valid archetype-version-file: ${{ inputs.archetype-version-file }}"
+              ;;
+            *)
+              echo "::error::Invalid archetype-version-file '${{ inputs.archetype-version-file }}'. Accepted values: pom.xml.ftl, pyproject.toml.ftl, package.json.ftl, project-manifest.json.ftl"
+              exit 1
+              ;;
+          esac
+
+  publish:
+    needs: validate-inputs
+    runs-on: 'ubuntu-latest'
+    name: 'Publish Archetype'
+    steps:
+      - name: 'Generate token'
+        id: generate_token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.app-semantic-release-id }}
+          private_key: ${{ secrets.app-semantic-release-private-key }}
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release-branch }}
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Validate version.txt
+        shell: bash
+        run: |
+          if [ ! -f "version.txt" ]; then
+            touch version.txt
+          fi
+
+      - name: Configure Git
+        run: |
+          git config user.name app-semantic-release[bot]
+          git config user.email app-semantic-release[bot]@users.noreply.github.com
+
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          release-type: ${{ inputs.release-type }}
+          target-branch: ${{ inputs.release-branch }}
+
+      - name: Update archetype version in PR branch
+        if: ${{ steps.release.outputs.prs_created && !steps.release.outputs.release_created }}
+        shell: bash
+        env:
+          VERSION_FILE: ${{ inputs.archetype-version-file }}
+          RELEASE_BRANCH: ${{ inputs.release-branch }}
+        run: |
+          git fetch origin
+          git checkout release-please--branches--${RELEASE_BRANCH}
+          VERSION=$(cat version.txt | head -1)
+          FILE=$(find . -name "$VERSION_FILE" -type f | head -1)
+          echo "::group::Debug info"
+          echo "Version: ${VERSION}"
+          echo "Version file name: ${VERSION_FILE}"
+          echo "File found: ${FILE}"
+          echo "::endgroup::"
+          if [ -z "$FILE" ]; then
+            echo "::error::File '${VERSION_FILE}' not found in repository"
+            exit 1
+          fi
+          case "$VERSION_FILE" in
+            pom.xml.ftl)
+              sed -i "s|<archetype.version>.*</archetype.version>|<archetype.version>${VERSION}</archetype.version>|" "$FILE"
+              ;;
+            pyproject.toml.ftl)
+              sed -i "s|^archetypeVersion.*|archetypeVersion = \"${VERSION}\"|" "$FILE"
+              ;;
+            package.json.ftl|project-manifest.json.ftl)
+              sed -i '/"archetype"/,/}/{s/"version":[[:space:]]*"[^"]*"/"version": "'"${VERSION}"'"/;}' "$FILE"
+              ;;
+          esac
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit --amend --no-edit
+          git push --force
+
+      - name: Release Tag Updater
+        if: ${{ steps.release.outputs.release_created }}
+        uses: sersoft-gmbh/running-release-tags-action@v3
+        with:
+          tag: ${{ steps.release.outputs.tag_name }}
+          skip-repo-setup: true
+          create-release: false
+          github-token: ${{ steps.generate_token.outputs.token }}

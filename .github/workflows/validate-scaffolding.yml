@@ -1,0 +1,83 @@
+name: Validate Archetype Scaffolding
+
+on:
+  workflow_call:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout caller repository (arch-ram-archetype-cdc)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.ref }}
+
+      - name: Validate Archetype Structure Patterns
+        run: |
+          echo "=== Validando la estructura en el repositorio: ${{ github.repository }} ==="
+
+          shopt -s nullglob
+
+          REQUIRED_PATTERNS=(
+            ".github/workflows/*.yml"
+            "templates/.github/workflows/*.ftl"
+            "templates/config-CDC/application/*.ftl"
+            "templates/spectral"
+            "templates/tests"
+            "templates/*.ftl"
+            "version.txt"
+          )
+
+          MISSING_COUNT=0
+
+          for pattern in "${REQUIRED_PATTERNS[@]}"; do
+            files=($pattern)
+
+            if [ ${#files[@]} -eq 0 ]; then
+              echo "❌ Error: No se encontraron elementos para el patrón '$pattern'"
+              MISSING_COUNT=$((MISSING_COUNT + 1))
+            else
+              echo "✅ Ok: Encontrado ($pattern) -> ${files[0]} (${#files[@]} elemento(s))"
+            fi
+          done
+
+          if [ $MISSING_COUNT -gt 0 ]; then
+            echo "----------------------------------------------------"
+            echo "🚨 Error: Faltan $MISSING_COUNT patrones obligatorios en la estructura del arquetipo."
+            exit 1
+          fi
+
+      - name: Validate version.txt SemVer Format
+        run: |
+          echo "=== Validando formato de versión en version.txt ==="
+          if [ ! -f "version.txt" ]; then
+            echo "❌ Error: El archivo version.txt no existe."
+            exit 1
+          fi
+
+          VERSION=$(cat version.txt | xargs)
+          echo "Versión encontrada: '$VERSION'"
+
+          SEMVER_REGEX="^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$"
+
+          if [[ $VERSION =~$SEMVER_REGEX ]]; then
+            echo "✅ El archivo version.txt cumple con el formato SemVer ($VERSION)."
+          else
+            echo "❌ Error: '$VERSION' no tiene un formato de versión válido (esperado: X.Y.Z)."
+            exit 1
+          fi
+
+      - name: Print Final Result Message
+        if: success()
+        run: |
+          echo "========================================================"
+          echo "🎉 ¡VALIDACIÓN EXITOSA!"
+          echo "La estructura del arquetipo y las plantillas .ftl son correctas."
+          echo "========================================================"
+          
+          # Escribe el mensaje directamente en el resumen del Check de GitHub Actions
+          echo "### 🚀 Validaciones completadas con éxito" >> $GITHUB_STEP_SUMMARY
+          echo "- **Estructura del arquetipo:** OK" >> $GITHUB_STEP_SUMMARY
+          echo "- **Formatos de plantillas .ftl:** OK" >> $GITHUB_STEP_SUMMARY
+          echo "- **Versión SemVer:** \`$(cat version.txt | xargs)\` OK" >> $GITHUB_STEP_SUMMARY

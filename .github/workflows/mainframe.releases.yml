@@ -1,0 +1,399 @@
+# Copyright (c) NEORIS DevOps 
+#
+# Release Workflow for Mainframe z/OS Applications
+#
+
+name: Release
+run-name: "Generate Release Candidate ${{ inputs.tag-version }} #${{ github.run_number }}"
+
+on:   
+  workflow_call:
+    inputs:
+
+      tag-version:
+        description: "Versión extraída del tag (debe coincidir con la del manifiesto)"
+        type: string
+        required: true      
+      manifest-file:
+        description: 'Manifest file'
+        required: false
+        type: string
+        default: 'project-manifest.json'
+      next-snapshot-create-pull-request:
+        description: 'Create Pull Request to develop'
+        required: false
+        type: boolean
+        default: true
+      runs-on-push-tag:
+        description: "runs-on to use for push tag job. Example: [\"ubuntu-latest\"],
+          [\"self-hosted\", \"mar\", \"dev\"]"
+        required: false
+        type: string
+        default: "[\"self-hosted\", \"mar\", \"dev\"]"
+      source-folder:
+        description: 'Source folder to use for pull request job.'
+        required: false
+        type: string
+        default: '.'
+      application:
+        description: "Application repo name"
+        type: string
+        required: true
+      branch:
+        description: "Aplication ref branch"
+        type: string
+        required: true
+      rse_user:
+        description: "Zos Mainframe User"
+        type: string
+        required: true
+      run_number:
+        description: "Action run number"
+        type: string
+        required: true
+      run_attempt:
+        description: "Action Job Attempt"
+        type: string
+        required: true
+
+    outputs:
+      artifact_version:
+        description: "Published artifact version (snapshot or release)"
+        value: ${{ jobs.push-tag.outputs.published-version }}
+
+    secrets:
+      AZURE_ARTIFACTS_USER:
+        description: "User Azure Artifacts"
+        required: false
+      AZURE_ARTIFACTS_PW:
+        description: "Password Azure Artifacts"
+        required: false
+      APP_GHZOS_PW:
+        description: "Zos Mainframe Password"
+        required: true
+      ACR_TOKEN_USER:
+        required: true
+      ACR_TOKEN_PW:
+        required: true
+      RAM_GITHUB_GIT_TOKEN: 
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+env:
+  # En el flujo de tags rc, el artefacto SIEMPRE se publica al feed de snapshots.
+  # IS_RELEASE se fija a false.
+  IS_RELEASE: false
+
+jobs:
+
+  # Generate centralized tokens if needed
+  token-generate:
+   #https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#running-your-pull_request_target_workflow_when_a_pull_request_merges
+   if: ${{ endsWith(inputs.tag-version, '-dev') || endsWith(inputs.tag-version, '-pre') }}
+   uses: ./.github/workflows/token-generate.yml  
+   with:
+      profile: 'reader'
+      # Token need acces to current repo and esp-dvi-global-configuration-properties
+      repositories: ${{ format('{0},{1}', github.repository, 'esp-dvi-global-configuration-properties') }}
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+     needs: token-generate
+     uses: ./.github/workflows/validate-workflow.yml
+     with:
+        workflow_file: 'release.yml'
+        schema: 'mainframe.release.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  push-tag:
+    needs: [init, token-generate]
+    name: "Generate Snapshot Artifact - ${{ inputs.tag-version }}"
+    runs-on: ${{ fromJson(inputs.runs-on-push-tag) }}
+    container:
+      image: acrmapfredevops.azurecr.io/mapfre/arch/ram/zowe-cli:dev
+      credentials:
+        username: ${{ secrets.ACR_TOKEN_USER }}
+        password: ${{ secrets.ACR_TOKEN_PW }}
+      options: --user root
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      published-version: ${{ steps.get-snapshot-version.outputs.version }}
+      environment: ${{ steps.parse-tag.outputs.environment }}      
+      name: ${{ steps.read-name.outputs.value }}
+      description: ${{ steps.read-description.outputs.value }}
+
+    env:
+      RSE_USER: ${{ inputs.rse_user }}
+      APP_GHZOS_PW: ${{ secrets.APP_GHZOS_PW }}
+      ZOWE_HOME: /home/zowe
+      ZOWE_CLI_HOME: /home/zowe/.zowe
+      MF_WORKSPACE: /usr/lpp/IDZ/github/workspace
+      SCRIPTS_DIR: /usr/lpp/IDZ/neoris/zappbuild/v3r10/pipeline/GitActionsShell
+      APPLICATION: ${{ inputs.application }}
+      BRANCH: ${{ inputs.branch }}
+
+    steps:
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+          ref: ${{ inputs.tag-version }}
+
+      - name: Read Name
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        id: read-name
+        with:
+          file: ${{ inputs.manifest-file }}
+          attribute: name
+
+      - name: Read Version
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        id: read-version
+        with:
+          file: ${{ inputs.manifest-file }}
+          attribute: version
+
+      - name: Read Description
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        id: read-description
+        with:
+          file: ${{ inputs.manifest-file }}
+          attribute: description
+
+      - name: Validate and parse tag version
+        id: parse-tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MANIFEST_VERSION="${{ steps.read-version.outputs.value }}"
+          TAG_FULL="${{ inputs.tag-version }}"
+
+          MANIFEST_CORE=$(echo "$MANIFEST_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+
+          TAG_CORE=""
+          TAG_RC=""
+          TAG_TEXT=""
+          TAG_ENV=""
+          PUBLISH_VERSION=""
+
+          # Formato completo: 0.0.2-rc1-textoprueba-dev
+          if [[ "$TAG_FULL" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-(rc[0-9]+)-([[:alnum:]._-]+)-(dev|pre)$ ]]; then
+            TAG_CORE="${BASH_REMATCH[1]}"
+            TAG_RC="${BASH_REMATCH[2]}"
+            TAG_TEXT="${BASH_REMATCH[3]}"
+            TAG_ENV="${BASH_REMATCH[4]}"
+
+            PUBLISH_VERSION="${TAG_CORE}-${TAG_RC}-${TAG_TEXT}-${TAG_ENV}"
+
+          # Formato corto: 0.0.1-dev
+          elif [[ "$TAG_FULL" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-(dev|pre)$ ]]; then
+            TAG_CORE="${BASH_REMATCH[1]}"
+            TAG_ENV="${BASH_REMATCH[2]}"
+
+            PUBLISH_VERSION="${TAG_CORE}-${TAG_ENV}"
+
+          else
+            echo "::error::El tag '$TAG_FULL' no cumple ninguno de los formatos válidos:"
+            echo "::error::- X.Y.Z-rcN-texto-{dev|pre}. Ejemplo: 0.0.2-rc1-textoprueba-dev"
+            echo "::error::- X.Y.Z-{dev|pre}. Ejemplo: 0.0.1-dev"
+            exit 1
+          fi
+
+          if [[ "$MANIFEST_CORE" != "$TAG_CORE" ]]; then
+            echo "::error::La versión del manifiesto ($MANIFEST_VERSION → núcleo $MANIFEST_CORE) no coincide con la del tag ($TAG_FULL → núcleo $TAG_CORE)."
+            exit 1
+          fi
+
+          echo "core=$TAG_CORE" >> "$GITHUB_OUTPUT"
+          echo "rc=$TAG_RC" >> "$GITHUB_OUTPUT"
+          echo "text=$TAG_TEXT" >> "$GITHUB_OUTPUT"
+          echo "environment=$TAG_ENV" >> "$GITHUB_OUTPUT"
+          echo "publish_version=$PUBLISH_VERSION" >> "$GITHUB_OUTPUT"
+
+          echo "Versión validada. Se publicará como: $PUBLISH_VERSION"
+
+
+      - name: Get Package Version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.parse-tag.outputs.publish_version }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Prepare environment (DBus, Keyring, Safe Branch Name)
+        shell: bash
+        run: |
+          export $(dbus-launch)
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> $GITHUB_ENV
+          echo "DBUS_SESSION_BUS_PID=$DBUS_SESSION_BUS_PID" >> $GITHUB_ENV
+          echo "" | gnome-keyring-daemon -r --unlock --components=secrets 2>/dev/null
+
+          SAFE_BRANCH="${BRANCH//\//_}"
+          echo "SAFE_BRANCH=$SAFE_BRANCH" >> "$GITHUB_ENV"
+          echo "APP_DIR=${APPLICATION}/${{ inputs.run_number }}_${{ inputs.run_attempt }}/${SAFE_BRANCH}" >> "$GITHUB_ENV"
+
+      - name: Check & Obtain JWT to mainframe
+        shell: bash
+        run: |
+          echo "=== $(date) ==="
+          time timeout 30s zowe rse check status --user "$RSE_USER" --password "$APP_GHZOS_PW"
+          time timeout 30s zowe rse auth login --user "$RSE_USER" --password "$APP_GHZOS_PW"
+
+      - name: Create application directory
+        run: zowe rse issue unix "mkdir -p ${{ env.MF_WORKSPACE }}/${APP_DIR} ${{env.MF_WORKSPACE }}/${APP_DIR}/target" --cwd "/usr/lpp/IDZ/github/"
+
+      - name: Clone Repo & Copy configuration files
+        env:
+          GITHUB_TOKEN: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        run: |
+          zowe rse issue unix "${{env.SCRIPTS_DIR}}/runScript.sh ${{env.SCRIPTS_DIR}}/CheckoutBranch ${{env.APPLICATION}} ${{env.MF_WORKSPACE}}/$APP_DIR https://github.com/mapfre-tech/${{env.APPLICATION}}.git ${{ inputs.tag-version }} ${{env.GITHUB_TOKEN}}" --cwd "${{env.MF_WORKSPACE}}/$APP_DIR"
+          zowe rse issue unix "${{env.SCRIPTS_DIR}}/runScript.sh ${{env.SCRIPTS_DIR}}/CheckoutFileProperties ${{env.APPLICATION}} ${{env.MF_WORKSPACE}}/$APP_DIR https://github.com/mapfre-tech/esp-dvi-global-configuration-properties main ${{env.GITHUB_TOKEN}}" --cwd "${{env.MF_WORKSPACE}}"
+
+      - name: Build & Package Application on Mainframe
+        run: |
+          zowe rse issue unix "${{env.SCRIPTS_DIR}}/runScript.sh ${{env.SCRIPTS_DIR}}/BuildWithDBB ${{env.APPLICATION}} ${{env.BRANCH}} ${{env.MF_WORKSPACE}}/$APP_DIR ${{ inputs.run_number }} forceFullBuildScanOnly=false ${{ steps.parse-tag.outputs.environment }} ${{ steps.parse-tag.outputs.publish_version }}" --cwd "${{env.MF_WORKSPACE}}"
+          zowe rse issue unix "${{env.SCRIPTS_DIR}}/runScript.sh ${{env.SCRIPTS_DIR}}/PackageBuild ${{env.APPLICATION}} ${{env.BRANCH}} ${{env.MF_WORKSPACE}}/$APP_DIR ${{ inputs.run_number }} ${{ steps.version.outputs.version }}" --cwd "${{env.MF_WORKSPACE}}"
+
+      - name: Validate Build Artifacts
+        run: |
+          if ! zowe rse issue unix "ls ${{env.MF_WORKSPACE}}/$APP_DIR/target/BUILD-${{ inputs.run_number }}/*.tar" --cwd "${{env.MF_WORKSPACE}}"; then
+            echo "::warning::Build artifact (.tar) not found. No COBOL changes in this snapshot, continuing."
+          else
+            echo "Build artifact found successfully."
+          fi
+
+      - name: Download Build Results and Deployment Report
+        if: success()
+        run: |
+          zowe rse download uss-directory "${{env.MF_WORKSPACE}}/$APP_DIR/target/BUILD-${{ inputs.run_number }}" --binary || true
+          ls -ltrd BUILD-${{ inputs.run_number }}/* || true
+
+      - name: Upload Build Logs and Metadata
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{env.APPLICATION}}_${{env.BRANCH}}-BUILD-${{ inputs.run_number }}
+          path: |
+            BUILD-${{ inputs.run_number }}/*.txt
+            BUILD-${{ inputs.run_number }}/*.json
+            BUILD-${{ inputs.run_number }}/*.html
+            BUILD-${{ inputs.run_number }}/*.log
+          if-no-files-found: ignore
+
+      - name: Upload TAR Artifact
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{env.APPLICATION}}-${{env.VERSION}}
+          path: |
+            BUILD-${{ inputs.run_number }}/*.tar
+          if-no-files-found: error
+
+      - name: Clean GitHub Workspace
+        if: success()
+        run: zowe rse issue unix "rm -rf ${{env.MF_WORKSPACE}}/${{env.APPLICATION}}/${{inputs.run_number }}_${{ inputs.run_attempt }}" --cwd "${{env.MF_WORKSPACE}}"
+
+      - name: Logout and remove JWT
+        if: always()
+        run: |
+          zowe rse auth logout
+
+      - name: Package Artifact
+        id: package-artifact
+        uses: mapfre-tech/action-fileutils/zip@v1
+        with:
+          output-path: publish_artifact
+          exclude: '.git/\* .gitignore'
+
+      # Determine Snapshot version based on current version + suffix (Run Number)
+      - name: Snapshot version
+        id: get-snapshot-version
+        run: |
+          echo "version=${{ steps.version.outputs.version }}-${{ github.run_number }}" >> $GITHUB_OUTPUT          
+
+  publish:
+    needs: [push-tag]
+    name: "Publish Release Candidate Artifact - ${{ needs.push-tag.outputs.version }} - ${{ needs.push-tag.outputs.environment }}"
+    runs-on: ${{ fromJson(inputs.runs-on-push-tag) }}
+    steps:     
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+       
+      - name: Package Release Candidate Source Artifact
+        id: package-release-candidate
+        uses: mapfre-tech/action-fileutils/zip@v1
+        with:
+          output-path: publish_artifact
+          exclude: '.git/\* .gitignore'
+
+      - name: Publish Release Candidate Source Artifact
+        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+        with:
+          feed: snapshots
+          packageName: source-${{ needs.push-tag.outputs.name }}
+          version: ${{ needs.push-tag.outputs.published-version }}
+          path: publish_artifact
+          description: "source-${{ needs.push-tag.outputs.name }} ${{ needs.push-tag.outputs.published-version }} release candidate for ${{ needs.push-tag.outputs.environment }} - ${{ needs.push-tag.outputs.description }}"
+          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      - name: Download TAR Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.application }}-${{ needs.push-tag.outputs.version }}
+          path: publish_artifact/
+
+      - name: Publish Snapshot Artifact
+        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+        with:
+          feed: snapshots
+          packageName: ${{ needs.push-tag.outputs.name }} 
+          version: ${{ needs.push-tag.outputs.published-version }}
+          path: publish_artifact
+          description: "${{ needs.push-tag.outputs.name }} ${{ needs.push-tag.outputs.published-version }} release candidate for ${{ needs.push-tag.outputs.environment }} - ${{ needs.push-tag.outputs.description }}"
+          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+          
+      - name: Job Summary
+        if: success()
+        shell: bash
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## Release Candidate publicado correctamente
+
+          | Campo             | Valor                                                        |
+          |-------------------|--------------------------------------------------------------|
+          | **Aplicación**    | \`${{ inputs.application }}\`                                |
+          | **Versión**       | \`${{ needs.push-tag.outputs.published-version }}\`          |
+          | **Entorno**       | \`${{ needs.push-tag.outputs.environment }}\`                |
+          | **Feed**          | \`snapshots\`                                                |
+          | **Run**           | \`#${{ github.run_number }}\`                                |
+
+          > Despliega la versión **\`${{ needs.push-tag.outputs.published-version }}\`**         
+          EOF
+        
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ token-generate, push-tag ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}

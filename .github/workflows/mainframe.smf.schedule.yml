@@ -1,0 +1,158 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# SMF Report reusable workflow.
+# Generates a daily SMF 122 report on z/OS and uploads it as an artifact.
+# Optionally sends an email notification with a link to the workflow run.
+#
+# Required secrets:
+#   - APP_GHZOS_PW            (Repository)
+#   - ACR_TOKEN_USER          (Repository)
+#   - ACR_TOKEN_PW            (Repository)
+
+name: Schedule workflow
+run-name: "SMF Report"
+
+on:  
+  workflow_call:
+    inputs:
+      runs-on-pull-request:
+        description: 'runs-on to use for pull request job. Example: ["ubuntu-latest"], ["self-hosted", "mar", "dev"]'
+        required: false
+        type: string
+        default: '["self-hosted", "mar", "dev"]'      
+      rse_user:
+        description: 'Zos Mainframe User'
+        type: string
+        required: true
+      maintainer:
+        description: 'Principal maintainer of the application'
+        required: true
+        type: string
+      maintainer_bck:
+        description: 'Backup maintainer of the application'
+        required: true
+        type: string
+
+    secrets:
+      APP_GHZOS_PW:
+        description: 'Zos Mainframe Password'
+        required: true
+      ACR_TOKEN_USER:
+        required: true
+      ACR_TOKEN_PW:
+        required: true
+
+jobs:
+  smf-report:
+    name: SMF Report
+    runs-on: ${{ fromJson(inputs.runs-on-pull-request) }}
+    container:
+      image: acrmapfredevops.azurecr.io/mapfre/arch/ram/zowe-cli:dev
+      credentials:
+        username: ${{ secrets.ACR_TOKEN_USER }}
+        password: ${{ secrets.ACR_TOKEN_PW }}
+      options: --user root
+    # No job outputs
+    
+    env:
+      RSE_USER: ${{ inputs.rse_user }}
+      APP_GHZOS_PW: ${{ secrets.APP_GHZOS_PW }}
+      HOME: /home/zowe
+      ZOWE_CLI_HOME: /home/zowe/.zowe
+      WORKSPACE: /usr/lpp/IDZ/github/workspace
+      SMF_DSN_PREFIX: SMF.VIDA.IDZ1.DIARIO
+
+    steps:
+      - name: Prepare environment (DBus, Keyring, Date)
+        shell: bash
+        run: |
+          export $(dbus-launch)
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> $GITHUB_ENV
+          echo "DBUS_SESSION_BUS_PID=$DBUS_SESSION_BUS_PID" >> $GITHUB_ENV
+          echo "" | gnome-keyring-daemon -r --unlock --components=secrets 2>/dev/null
+          echo "CURRENT_DATE=$(date -d 'yesterday' +'%Y-%m-%d')" >> $GITHUB_ENV
+ 
+      - name: Check & Obtain JWT to mainframe
+        run: |
+          zowe rse check status --user "$RSE_USER" --password "$APP_GHZOS_PW"
+          zowe rse auth login --user "$RSE_USER" --password "$APP_GHZOS_PW"   
+
+      - name: Create SMF Report Directory
+        run: zowe rse issue unix "mkdir -p ${{ env.WORKSPACE }}/smf_out" --cwd "/usr/lpp/IDZ/github/"
+           
+      - name: SMF Report
+        run: |
+          zowe rse issue unix "export JAVA_HOME=/usr/lpp/java/J17.0_64/ && /usr/lpp/IDZ/IDZ17/IBM/dbb/bin/groovyz -DSMF_SHOW_GETTERS=true /usr/lpp/IDZ/neoris/zappbuild/v3r10/pipeline/ReadSMFRecords/ReadSMF.groovy --logEncoding UTF-8 -w ${{ env.WORKSPACE }}/smf_out --inputDsnPrefix ${{ env.SMF_DSN_PREFIX }} --runDate ${{ env.CURRENT_DATE }}" --cwd "${{ env.WORKSPACE }}/smf_out"
+          zowe rse issue unix "test -f SMFReport.html" --cwd "${{ env.WORKSPACE }}/smf_out"
+          zowe rse issue unix "mv -f SMFReport.html SMF_122_Report_${{ env.CURRENT_DATE }}.html" --cwd "${{ env.WORKSPACE }}/smf_out"           
+
+      - name: Download SMF Report
+        if: always()
+        run: zowe rse download uss-directory "${{env.WORKSPACE}}/smf_out" --binary        
+      
+      - name: Upload SMF Report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          path: smf_out/*.html
+          if-no-files-found: ignore
+               
+      - name: Clean GitHub Workspace
+        if: always()
+        run: zowe rse issue unix "rm -rf ${{env.WORKSPACE}}/smf_out/*" --cwd "${{env.WORKSPACE}}"     
+
+      - name: Clean Docker Workspace
+        if: always()
+        shell: bash
+        run: rm -rf smf_out
+          
+      - name: Logout and remove JWT
+        if: always()
+        run: |
+          zowe rse auth logout
+
+  # Send Mail job
+  send-mail:
+    name: Mail Notification
+    needs: smf-report
+    if: always()
+    runs-on: ubuntu-24.04-s
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Compute CURRENT_DATE (email job)
+        shell: bash
+        run: echo "CURRENT_DATE=$(date -d 'yesterday' +'%Y-%m-%d')" >> $GITHUB_ENV       
+      - name: Send Email Notification
+        uses: mapfre-tech/action-send-email@v1
+        with:
+          from: no-reply@mapfre.com
+          to: ${{ inputs.maintainer }}${{ inputs.maintainer_bck != '' && format(', {0}', inputs.maintainer_bck) || '' }}
+          subject: SMF 122 Report Notification - ${{ env.CURRENT_DATE }}
+          body: |
+            <div style="font-family: Arial, sans-serif; max-width: 750px; margin: 0 auto; padding: 20px;">
+
+              <h1 style="text-align: center;">📄 SMF 122 Report</h1>
+              <hr>
+
+              <p style="text-align: center;">
+                A continuación se indica el reporte SMF generado automáticamente con fecha <strong>${{ env.CURRENT_DATE }}</strong>.
+              </p>
+
+              <div style="text-align: center; margin: 20px 0;">
+                <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                   style="background-color: #e90027; color: white; padding: 7px 16px; text-decoration: none; border-radius: 5px; font-size: 13px;">
+                  Ver reporte SMF
+                </a>
+              </div>
+
+              <hr>
+
+              <p style="text-align: center; color: #6a737d; font-size: 12px; margin-top: 30px;">
+                <strong>MAPFRE DevOps Platform</strong><br>
+                Automated notification from GitHub Actions
+              </p>
+
+            </div>         
+       

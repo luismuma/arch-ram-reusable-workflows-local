@@ -1,0 +1,251 @@
+name: Merge Commit
+run-name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact #${{ github.run_number }}"
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: 'Python version'
+        required: false
+        type: string
+        default: '3.11'
+      dependency-index-url:
+        description: 'Additional Python package index URL (optional)'
+        required: false
+        type: string
+        default: ''
+      next-snapshot-create-pull-request:
+        description: 'Create Pull Request to develop'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      RAM_GITHUB_GIT_TOKEN: 
+        description: 'GitHub Token for creating Pull Request to develop'
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for centralized token'
+        required: false
+      AZURE_ARTIFACTS_USER: 
+        description: 'User Azure Artifacts' 
+        required: true
+      AZURE_ARTIFACTS_PW: 
+        description: 'Password Azure Artifacts'
+        required: true
+
+env:
+  IS_RELEASE: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}  
+
+jobs:
+  # Generate centralized tokens if needed
+  token-generate:
+   #https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#running-your-pull_request_target-workflow-when-a-pull-request-merges
+   if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }} 
+   uses: ./.github/workflows/token-generate.yml  
+   with:
+      profile: 'deployer'
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+     needs: token-generate
+     uses: ./.github/workflows/validate-workflow.yml
+     if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }} 
+     with:
+        workflow_file: 'merge-commit.yml'
+        schema: 'lib.python.merge-commit.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  merge:
+    needs: [ init, token-generate ]
+    if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }}
+    name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+      # Python and Poetry dependencies
+      - name: Set up Python ${{ inputs.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python-version }}
+      
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install tomlkit
+
+      - name: Configure pip index (optional)
+        if: ${{ inputs.dependency-index-url != '' }}
+        run: |
+          python -m pip config set global.extra-index-url "${{ inputs.dependency-index-url }}"
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install -e .[dev]
+
+      # Run tests from root to generate relative paths in coverage report
+      - name: Test
+        run: |
+          pytest
+
+      # read name from pyproject.toml
+      - name: read-name
+        id: read-name
+        uses: SebRollen/toml-action@v1.2.0
+        with:
+          file: 'pyproject.toml'
+          field: 'project.name'
+
+      # Read version (snapshot) from pyproject.toml
+      - name: read-version
+        id: read-version
+        uses: SebRollen/toml-action@v1.2.0
+        with:
+          file: 'pyproject.toml'
+          field: 'project.version'
+
+      # Calculate new version from snapshot
+      - name: Get New version
+        if:  fromJson(env.IS_RELEASE)
+        id: new-version
+        run: |
+          current_version=${{ steps.read-version.outputs.value }}
+          clean_version="${current_version%%-*}"
+          IFS='.' read -r -a version_parts <<< "$clean_version"
+          major=${version_parts[0]}
+          minor=${version_parts[1]}
+          patch=${version_parts[2]}
+          new_version="$major.$minor.$patch"
+          echo "New version: $new_version"
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+
+      - name: Set New version
+        id: set-new-version
+        if: fromJson(env.IS_RELEASE)
+        run: |
+          python - <<'PY' >> $GITHUB_OUTPUT
+          from tomlkit import parse, dumps
+
+          new_version = "${{ steps.new-version.outputs.new_version }}"
+          with open("pyproject.toml", "r", encoding="utf-8") as fh:
+              data = parse(fh.read())
+
+          if "project" not in data or "version" not in data["project"]:
+              raise SystemExit("pyproject.toml missing [project].version")
+
+          data["project"]["version"] = new_version
+
+          with open("pyproject.toml", "w", encoding="utf-8") as fh:
+              fh.write(dumps(data))
+
+          print(f"value={new_version}")
+          PY
+      
+      # Publish Snapshot Python package
+      - name: Publish Snapshot Package
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        uses: mapfre-tech/action-python/publish@v1
+        with:
+          workspace: '.'
+          azure_artifacts_pw: ${{ secrets.AZURE_ARTIFACTS_PW }}
+          feed: 'snapshots'
+
+      # Publish Release Python package
+      - name: Publish Release Package
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-python/publish@v1
+        with:
+          workspace: '.'
+          azure_artifacts_pw: ${{ secrets.AZURE_ARTIFACTS_PW }}
+          feed: 'releases'
+
+      # Release new version
+      - name: Release Promotion (Commit & Push version Snapshot)
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-git/commit-push@v1
+        with:
+          filename: pyproject.toml
+          message: Promotion to RELEASE completed version (${{ steps.set-new-version.outputs.value }})
+          branch: ${{github.base_ref}}
+
+      - name: Release Promotion (Tag Git Repository)
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-git/tag-push@v1
+        with:
+          tag: "${{ steps.set-new-version.outputs.value }}"
+          message: "New version tag ${{ steps.set-new-version.outputs.value }}" 
+
+      # Release promotion next version
+      - name: Set Next version
+        id: set-next-version
+        if: fromJson(env.IS_RELEASE)
+        run: |
+          python - <<'PY' >> $GITHUB_OUTPUT
+          current_version = "${{ steps.set-new-version.outputs.value }}"
+          parts = current_version.split("-")[0].split(".")
+          if len(parts) < 2:
+            raise SystemExit(f"Invalid version: {current_version}")
+          major = int(parts[0])
+          minor = int(parts[1]) + 1
+          next_version = f"{major}.{minor}.0"
+          print(f"value={next_version}")
+          PY
+      
+      - name: Config next version Snapshot
+        id: set-version-snapshot
+        if: fromJson(env.IS_RELEASE)
+        run: |
+          python - <<'PY' >> $GITHUB_OUTPUT
+          from tomlkit import parse, dumps
+
+          next_version = "${{ steps.set-next-version.outputs.value }}"
+          snapshot_version = f"{next_version}-dev"
+
+          with open("pyproject.toml", "r", encoding="utf-8") as fh:
+            data = parse(fh.read())
+
+          if "project" not in data or "version" not in data["project"]:
+            raise SystemExit("pyproject.toml missing [project].version")
+
+          data["project"]["version"] = snapshot_version
+
+          with open("pyproject.toml", "w", encoding="utf-8") as fh:
+            fh.write(dumps(data))
+
+          print(f"value={snapshot_version}")
+          PY
+
+      - name: Next Snapshot (Git Commit & Push version Snapshot)
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-git/commit-push@v1
+        with:
+          filename: pyproject.toml
+          message: promotion to next development version (${{ steps.set-version-snapshot.outputs.value }}) completed
+          branch: ${{github.base_ref}}
+          create-pull-request: ${{ inputs.next-snapshot-create-pull-request }} 
+          pull-request-title: Next development version (${{ steps.set-version-snapshot.outputs.value }})
+          github-token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ token-generate, merge ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}

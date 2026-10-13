@@ -1,0 +1,494 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Merge Commit Workflow. Triggers when:
+#   - A pull request to develop is closed and merged
+#   - A pull request to main is closed and merged
+#
+# Required secrets:
+#   - AZURE_ARTIFACTS_USER    (Organization)
+#   - AZURE_ARTIFACTS_PW      (Organization)
+#   - RAM_GITHUB_GIT_TOKEN    (Repository)
+
+name: Merge Commit
+run-name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact #${{ github.run_number }}"
+
+on:   
+  workflow_call:
+    inputs:
+      manifest-file:
+        description: 'Manifest file'
+        required: false
+        type: string
+        default: 'project-manifest.json'
+      next-snapshot-create-pull-request:
+        description: 'Create Pull Request to develop'
+        required: false
+        type: boolean
+        default: true
+      runs-on-merge-commit:
+        description: "runs-on to use for pull request job. Example: [\"ubuntu-latest\"],
+          [\"self-hosted\", \"mar\", \"dev\"]"
+        required: false
+        type: string
+        default: "[\"self-hosted\", \"mar\", \"dev\"]"
+      source-folder:
+        description: 'Source folder to use for pull request job.'
+        required: false
+        type: string
+        default: '.'
+      application:
+        description: "Application repo name"
+        type: string
+        required: true
+      rse_user:
+        description: "Zos Mainframe User"
+        type: string
+        required: true
+      maintainer:
+        description: "Principal maintainer of the application"
+        required: true
+        type: string
+        default: ""
+      maintainer_bck:
+        description: "Backup maintainer of the application"
+        required: false
+        type: string
+        default: ""                
+
+    outputs:
+      artifact_version:
+        description: "Published artifact version (snapshot or release)"
+        value: ${{ jobs.merge.outputs.published-version }}
+
+    secrets:
+      AZURE_ARTIFACTS_USER:
+        description: "User Azure Artifacts"
+        required: false
+      AZURE_ARTIFACTS_PW:
+        description: "Password Azure Artifacts"
+        required: false
+      APP_GHZOS_PW:
+        description: "Zos Mainframe Password"
+        required: true
+      ACR_TOKEN_USER:
+        required: true
+      ACR_TOKEN_PW:
+        required: true
+      RAM_GITHUB_GIT_TOKEN: 
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+
+env:
+  # Merge to main/master (base_ref)
+  IS_RELEASE: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}  
+
+jobs:
+
+  # Generate centralized tokens if needed
+  token-generate:
+   #https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#running-your-pull_request_target-workflow-when-a-pull-request-merges
+   if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }} 
+   uses: ./.github/workflows/token-generate.yml  
+   with:
+      profile: 'deployer'     
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+  
+  token-generate-reader:
+    #https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#running-your-pull_request_target-workflow-when-a-pull-request-merges
+    if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }} 
+    uses: ./.github/workflows/token-generate.yml  
+    with:
+        profile: 'reader'
+        # Token need acces to current repo and esp-dvi-global-configuration-properties
+        repositories: ${{ format('{0},{1}', github.repository, 'esp-dvi-global-configuration-properties') }}
+    secrets:
+        EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}       
+
+  init:
+     needs: [token-generate, token-generate-reader]
+     uses: ./.github/workflows/validate-workflow.yml
+     with:
+        workflow_file: 'merge-commit.yml'
+        schema: 'mainframe.merge-commit.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate-reader.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate-reader.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+          
+  merge:   
+    needs: [init, token-generate-reader]
+    name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact"
+    runs-on: ${{ fromJson(inputs.runs-on-merge-commit) }}
+    container:
+      image: acrmapfredevops.azurecr.io/mapfre/arch/ram/zowe-cli:dev
+      credentials:
+        username: ${{ secrets.ACR_TOKEN_USER }}
+        password: ${{ secrets.ACR_TOKEN_PW }}
+      options: --user root
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      published-version: ${{ steps.get-snapshot-version.outputs.version }}
+      name: ${{ steps.read-name.outputs.value }}
+      description: ${{ steps.read-description.outputs.value }}
+      next-release-version: ${{ steps.next-release-version.outputs.nextVersion }}
+
+    env:
+      RSE_USER: ${{ inputs.rse_user }}
+      APP_GHZOS_PW: ${{ secrets.APP_GHZOS_PW }}      
+      ZOWE_HOME: /home/zowe
+      ZOWE_CLI_HOME: /home/zowe/.zowe
+      MF_WORKSPACE: /usr/lpp/IDZ/github/workspace
+      SCRIPTS_DIR: /usr/lpp/IDZ/neoris/zappbuild/v3r10/pipeline/GitActionsShell
+      APPLICATION: ${{ inputs.application }}
+      BRANCH: ${{ github.base_ref || github.ref_name }}
+
+    steps:
+
+      - name: Decrypt token
+        if: needs.token-generate-reader.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate-reader.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+      - name: Read Name
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        id: read-name
+        with:
+            file: ${{ inputs.manifest-file }}
+            attribute: name            
+   
+      - name: Read Version
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        id: read-version
+        with:
+            file: ${{ inputs.manifest-file }}
+            attribute: version
+      
+      - name: Read Description
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        id: read-description
+        with:
+            file: ${{ inputs.manifest-file }}
+            attribute: description
+
+      - name: Get Package Version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ env.IS_RELEASE }}" == "true" ]]; then
+            VERSION=$(echo "${{ steps.read-version.outputs.value }}" | cut -d'-' -f1)
+          else
+            VERSION="${{ steps.read-version.outputs.value }}"
+          fi
+          echo "version=$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"            
+      
+      - name: Prepare environment (DBus, Keyring, Safe Branch Name)
+        shell: bash
+        run: |
+          export $(dbus-launch)
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> $GITHUB_ENV
+          echo "DBUS_SESSION_BUS_PID=$DBUS_SESSION_BUS_PID" >> $GITHUB_ENV
+          echo "" | gnome-keyring-daemon -r --unlock --components=secrets 2>/dev/null
+
+          SAFE_BRANCH="${BRANCH//\//_}"           # feature/xxx -> feature_xxx
+          echo "APP_DIR=${APPLICATION}/${{ github.run_number }}_${{ github.run_attempt }}/${SAFE_BRANCH}" >> "$GITHUB_ENV"
+
+      - name: Check & Obtain JWT to mainframe
+        shell: bash
+        run: |
+          echo "=== $(date) ==="
+          time timeout 30s zowe rse check status --user "$RSE_USER" --password "$APP_GHZOS_PW"
+          time timeout 30s zowe rse auth login --user "$RSE_USER" --password "$APP_GHZOS_PW"
+
+      - name: Create application directory
+        run: zowe rse issue unix "mkdir -p ${{ env.MF_WORKSPACE }}/${APP_DIR} ${{env.MF_WORKSPACE }}/${APP_DIR}/target" --cwd "/usr/lpp/IDZ/github/"
+
+      - name: Clone Repo & Copy configuration files
+        env:
+          GITHUB_TOKEN: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        run: |
+          zowe rse issue unix "${{env.SCRIPTS_DIR}}/runScript.sh ${{env.SCRIPTS_DIR}}/CheckoutBranch ${{env.APPLICATION}} ${{env.MF_WORKSPACE}}/$APP_DIR https://github.com/mapfre-tech/${{env.APPLICATION}}.git ${{env.BRANCH}} ${{env.GITHUB_TOKEN}}" --cwd "${{env.MF_WORKSPACE}}/$APP_DIR"
+          zowe rse issue unix "${{env.SCRIPTS_DIR}}/runScript.sh ${{env.SCRIPTS_DIR}}/CheckoutFileProperties ${{env.APPLICATION}} ${{env.MF_WORKSPACE}}/$APP_DIR https://github.com/mapfre-tech/esp-dvi-global-configuration-properties main ${{env.GITHUB_TOKEN}}" --cwd "${{env.MF_WORKSPACE}}"
+
+      - name: Build & Package Application on Mainframe
+        run: |
+          zowe rse issue unix "${{env.SCRIPTS_DIR}}/runScript.sh ${{env.SCRIPTS_DIR}}/BuildWithDBB ${{env.APPLICATION}} ${{env.BRANCH}} ${{env.MF_WORKSPACE}}/$APP_DIR ${{ github.run_number }} forceFullBuildScanOnly=false" --cwd "${{env.MF_WORKSPACE}}"
+          zowe rse issue unix "${{env.SCRIPTS_DIR}}/runScript.sh ${{env.SCRIPTS_DIR}}/PackageBuild ${{env.APPLICATION}} ${{env.BRANCH}} ${{env.MF_WORKSPACE}}/$APP_DIR ${{ github.run_number }} ${{ steps.version.outputs.version }}" --cwd "${{env.MF_WORKSPACE}}"
+
+      - name: Validate Build Artifacts
+        run: |
+          if ! zowe rse issue unix "ls ${{env.MF_WORKSPACE}}/$APP_DIR/target/BUILD-${{ github.run_number }}/*.tar" --cwd "${{env.MF_WORKSPACE}}"; then
+            if [[ "${{ env.IS_RELEASE }}" == "true" ]]; then
+              echo "::warning::Build artifact (.tar) not found. No COBOL changes in this release — will attempt to reuse last TAR artifact."
+              echo "NO_TAR_FALLBACK=true" >> "$GITHUB_ENV"
+            else
+              echo "::warning::Build artifact (.tar) not found. No COBOL changes in this snapshot, continuing."
+            fi
+          else
+            echo "Build artifact found successfully."
+          fi
+
+      - name: Download Build Results and Deployment Report
+        if: success()
+        run: |
+          zowe rse download uss-directory "${{env.MF_WORKSPACE}}/$APP_DIR/target/BUILD-${{ github.run_number }}" --binary || true
+          ls -ltrd BUILD-${{ github.run_number }}/* || true          
+
+      - name: Upload Build Logs and Metadata
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{env.APPLICATION}}_${{env.BRANCH}}-BUILD-${{ github.run_number }}
+          path: |
+            BUILD-${{ github.run_number }}/*.txt
+            BUILD-${{ github.run_number }}/*.json
+            BUILD-${{ github.run_number }}/*.html
+            BUILD-${{ github.run_number }}/*.log
+          if-no-files-found: ignore
+
+      - name: Fallback - Download last TAR artifact (no COBOL changes)
+        if: success() && fromJson(env.IS_RELEASE) && env.NO_TAR_FALLBACK == 'true'
+        env:
+          GH_TOKEN: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        run: |
+          echo "No new TAR produced. Searching for last valid TAR artifact..."
+
+          LAST_ID=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=50" \
+            --jq "[.artifacts[] | select(.expired == false) | select(.name | startswith(\"${{ inputs.application }}-\"))] | sort_by(.created_at) | reverse | .[0].id")
+
+          LAST_NAME=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=50" \
+            --jq "[.artifacts[] | select(.expired == false) | select(.name | startswith(\"${{ inputs.application }}-\"))] | sort_by(.created_at) | reverse | .[0].name")
+
+          if [ -z "$LAST_ID" ] || [ "$LAST_ID" = "null" ]; then
+            echo "::error::No previous TAR artifact found. Cannot publish release without compiled artifact."
+            exit 1
+          fi
+
+          echo "::notice::Reusing last TAR artifact: $LAST_NAME (ID: $LAST_ID)"
+          mkdir -p BUILD-${{ github.run_number }}
+          gh api "repos/${{ github.repository }}/actions/artifacts/${LAST_ID}/zip" \
+            -H "Accept: application/vnd.github+json" > /tmp/last-artifact.zip
+          unzip -j /tmp/last-artifact.zip '*.tar' -d BUILD-${{ github.run_number }}/
+          echo "Fallback TAR placed:"
+          ls -lh BUILD-${{ github.run_number }}/*.tar
+
+      - name: Upload TAR Artifact
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{env.APPLICATION}}-${{env.VERSION}}
+          path: |
+            BUILD-${{ github.run_number }}/*.tar
+          if-no-files-found: error
+
+      - name: Clean GitHub Workspace
+        if: success()
+        run: zowe rse issue unix "rm -rf ${{ env.MF_WORKSPACE }}/${APP_DIR}" --cwd "${{ env.MF_WORKSPACE }}"
+
+      - name: Logout and remove JWT
+        if: always()
+        run: |
+          zowe rse auth logout    
+  
+      #TODO Pending to define unit test commands
+      - name: Unit Test
+        run: |
+          echo "Running unit tests..."
+          # Add your unit test commands here, e.g., invoking a test framework or tool 
+            
+      # Prepare release -> set version.txt release version
+      - name: Prepare release
+        id: next-release-version
+        if: ${{ fromJson(env.IS_RELEASE) }}
+        run: |
+          nextVersion=$(echo "${{ steps.read-version.outputs.value }}" | cut -d'-' -f1)
+          jq --arg nextVersion "$nextVersion" '.version = $nextVersion' "${{ inputs.manifest-file }}" > temp.json && mv temp.json "${{ inputs.manifest-file }}"
+          echo "nextVersion=$nextVersion" >> "$GITHUB_OUTPUT"
+              
+      # Package artifact: zip source (snapshot only, to be recompiled in target envs)
+      - name: Package Artifact
+        id: package-artifact
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        uses: mapfre-tech/action-fileutils/zip@v1
+        with:         
+          output-path: publish_artifact
+          exclude: '.git/\* .gitignore'
+      
+      # Determine Snapshot version based on current version + suffix (Run Number)
+      - name: Snapshot version
+        id: get-snapshot-version
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        run: |
+          echo "version=${{ steps.read-version.outputs.value }}-${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+  tag-and-promote:
+    needs: [merge, token-generate]
+    name: "Tagging ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }}"
+    runs-on: ${{ fromJson(inputs.runs-on-merge-commit) }}
+    
+    steps:
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+      # Git tag and push
+      - name: Tag Git Repository
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-git/tag-push@v1
+        with:
+          tag: ${{ needs.merge.outputs.next-release-version }}
+          message: "${{ needs.merge.outputs.name }} ${{ needs.merge.outputs.next-release-version }}"
+  
+      # Prepare next iteration
+      - name: Next Snapshot (Set next version in ${{ inputs.manifest-file }})
+        id: next-snapshot
+        if: fromJson(env.IS_RELEASE)
+        run: |
+          next_version=${{ needs.merge.outputs.next-release-version }}
+          IFS="." read major minor patch <<< "$next_version"
+          patch=$((patch + 1))
+          new_version="${major}.${minor}.${patch}-snapshot.1"
+          jq --arg new_version "$new_version" '.version = $new_version' ${{ inputs.manifest-file }} > temp.json && mv temp.json ${{ inputs.manifest-file }}
+          echo "nextVersion=$new_version" >> $GITHUB_OUTPUT
+
+      # Commit package.json
+      - name: Next Snapshot (Git Commit & Push ${{ inputs.manifest-file }})
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-git/commit-push@v1
+        with:
+          filename: ${{ inputs.manifest-file }}
+          message: promotion to next development version (${{ steps.next-snapshot.outputs.nextVersion }}) completed
+          branch: ${{github.base_ref}}
+          create-pull-request: ${{ inputs.next-snapshot-create-pull-request }}  
+          pull-request-title: Next development version (${{ steps.next-snapshot.outputs.nextVersion }})
+          github-token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+
+  publish:
+    needs: [merge, tag-and-promote] 
+    name: "Publish ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact"
+    runs-on: ${{ fromJson(inputs.runs-on-merge-commit) }}
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+       
+      # Snapshot: package source zip and publish directly to Azure Artifacts
+      - name: Package Snapshot Source Artifact
+        id: package-snapshot
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        uses: mapfre-tech/action-fileutils/zip@v1
+        with:
+          output-path: publish_artifact
+          exclude: '.git/\* .gitignore'
+
+      - name: Publish Snapshot Source Artifact
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+        with:
+          feed: snapshots
+          packageName: source-${{ needs.merge.outputs.name }}
+          version: ${{ needs.merge.outputs.published-version }}
+          path: publish_artifact
+          description: "source-${{ needs.merge.outputs.name }} ${{ needs.merge.outputs.published-version }} snapshot ${{ needs.merge.outputs.description }}"
+          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      # Snapshot: download mainframe TAR and publish binary to Azure Artifacts
+      - name: Download TAR Artifact
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.application }}-${{ needs.merge.outputs.version }}
+          path: publish_artifact/
+
+      - name: Publish Snapshot Artifact
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+        with:
+          feed: snapshots
+          packageName: ${{ needs.merge.outputs.name }}
+          version: ${{ needs.merge.outputs.published-version }}
+          path: publish_artifact
+          description: "${{ needs.merge.outputs.name }} ${{ needs.merge.outputs.published-version }} snapshot ${{ needs.merge.outputs.description }}"
+          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}          
+
+      # Release: package source zip and publish to Azure Artifacts
+      - name: Package Release Source Artifact
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-fileutils/zip@v1
+        with:
+          output-path: publish_source_artifact
+          exclude: '.git/\* .gitignore'
+
+      - name: Publish Release Source Artifact
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+        with:
+          feed: releases
+          packageName: source-${{ needs.merge.outputs.name }}
+          version: ${{ needs.merge.outputs.next-release-version }}
+          path: publish_source_artifact
+          description: "source-${{ needs.merge.outputs.name }} ${{ needs.merge.outputs.next-release-version }} release ${{ needs.merge.outputs.description }}"
+          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      # Release: download mainframe TAR and publish binary to Azure Artifacts
+      - name: Download TAR Artifact
+        if: fromJson(env.IS_RELEASE)
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.application }}-${{ needs.merge.outputs.version }}
+          path: publish_artifact/
+
+      - name: Publish Release Artifact
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+        with:
+          feed: releases
+          packageName: ${{ needs.merge.outputs.name }}
+          version: ${{ needs.merge.outputs.next-release-version }}
+          path: publish_artifact
+          description: "${{ needs.merge.outputs.name }} ${{ needs.merge.outputs.next-release-version }} release ${{ needs.merge.outputs.description }}"
+          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+          
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ token-generate, tag-and-promote ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  revoke-tokens-reader:
+    if: always() && needs.token-generate-reader.outputs.centralized-tokens == 'true'
+    needs: [ token-generate-reader, merge ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate-reader.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate-reader.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}

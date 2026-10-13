@@ -1,0 +1,106 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Validate Workflow.
+#   Reusable workflow that validates the syntax of a workflow file.
+#   Triggered by other workflows in this repository.
+on:
+  workflow_call:
+    inputs:
+      workflow_file:
+        description: "Workflow File"
+        required: true
+        type: string
+      schema:
+        description: "Workflow Schema"
+        required: true
+        type: string
+      schema-repository:
+        description: "GitHub repository containing the workflow schemas (org/repo format). Defaults to this repository."
+        required: false
+        type: string
+        default: 'mapfre-tech/arch-ram-reusable-workflows'
+      schema-repository-ref:
+        description: "Git ref for the schema repository. When empty, uses the auto-detected ref from the reusable workflow call."
+        required: false
+        type: string
+        default: ''
+      centralized-tokens:
+        description: "Flag to indicate if the GitHub token is a centralized encrypted token. If true, the token will be decrypted using the provided passphrase before validation."
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      GH_GIT_TOKEN:
+        description: "GitHub Token"
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: "Passphrase for decrypting the GitHub token"
+        required: false
+    outputs:
+      workflow_ref:
+        description: "Workflow Git Ref"
+        value: ${{ jobs.validate-workflow.outputs.workflow_ref }}      
+
+env:
+  DEFAULT_SCHEMA_REF: v1
+
+jobs:
+  validate-workflow:
+    name: Validate Workflow
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    outputs:
+      workflow_ref: ${{ steps.get-ref.outputs.workflow_ref }}  
+    steps:
+      # Get the reference used in the original call
+      #   ie : uses: mapfre-tech/arch-ram-reusable-workflows/.github/workflows/my.workflow.pull-request.yml@feature/my-feature
+      #   ref = feature/my-feature
+      # workaround from: https://github.com/actions/toolkit/issues/1264
+      - name: Get reusable workflow Git Ref
+        id: get-ref
+        run: |
+          JWT=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL")            
+          PAYLOAD=$(echo "$JWT" | cut -d '.' -f 2 | base64 -d 2>/dev/null || true)            
+          WORKFLOW_FULL_REF=$(
+            echo "$PAYLOAD" \
+              | grep -o '"job_workflow_ref":"[^"]*"' \
+              | cut -d':' -f2 \
+              | cut -d'@' -f2 \
+              | tr -d '"'
+          )
+          WORKFLOW_REF=$DEFAULT_SCHEMA_REF
+
+          case $WORKFLOW_FULL_REF in
+            refs/heads/*)
+              WORKFLOW_REF=${WORKFLOW_FULL_REF#refs/heads/}
+              ;;
+            refs/tags/*)
+              WORKFLOW_REF=${WORKFLOW_FULL_REF#refs/tags/}
+              ;;            
+          esac
+          echo "workflow_ref=$WORKFLOW_REF"
+          echo "workflow_full_ref=$WORKFLOW_FULL_REF" >> $GITHUB_OUTPUT
+          echo "workflow_ref=$WORKFLOW_REF" >> $GITHUB_OUTPUT
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Decrypt token
+        if: inputs.centralized-tokens
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ secrets.GH_GIT_TOKEN }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Validate Workflow (YAML Schema)
+        uses: mapfre-tech/action-validation-schema/yaml@v1
+        with:
+          schema: workflow-schemas/${{inputs.schema}}
+          schema-repository: ${{ inputs.schema-repository }}
+          schema-repository-ref: ${{ inputs.schema-repository-ref || steps.get-ref.outputs.workflow_ref }}
+          token: ${{ steps.decrypt.outputs.token || secrets.GH_GIT_TOKEN }}
+          files: .github/workflows/${{inputs.workflow_file}}

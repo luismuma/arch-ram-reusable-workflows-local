@@ -1,0 +1,67 @@
+type: map
+mapping:
+  name:
+    type: str
+    required: true
+  run-name:
+    type: str
+    required: true
+  on:
+    type: map
+    mapping:
+      pull_request:
+        type: map
+        mapping:
+          types:
+            type: seq
+            sequence:
+              - type: str
+          branches:
+            type: seq
+            sequence:
+              - type: str
+  jobs:
+    type: map
+    mapping:
+      pull-request:
+        type: map
+        mapping:
+          name:
+            type: str
+            required: true
+          uses:
+            type: str
+            required: true
+          with:
+            type: map
+            mapping:
+              dotnet-root:
+                type: str
+                required: false
+              solution-file:
+                type: str
+                required: false
+              nuget-config:
+                type: str
+                required: false
+              configuration:
+                type: str
+                required: false
+              dockerfile-path:
+                type: str
+                required: false
+              docker-context:
+                type: str
+                required: false
+          secrets:
+            type: map
+            mapping:
+              ACR_TOKEN_USER:
+                type: str
+                required: true
+              ACR_TOKEN_PW:
+                type: str
+                required: true
+              GH_TOKEN_ENCRYPTION_PASSPHRASE:
+                type: str
+                required: true

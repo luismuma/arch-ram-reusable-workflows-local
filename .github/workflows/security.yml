@@ -1,0 +1,39 @@
+name: Security Scan Workflow
+run-name: ${{ github.actor }} is running a Full Security Scan
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'Runner to use for the security scan. Example: ["ubuntu-24.04-s"]'
+        required: false
+        type: string
+        default: '["ubuntu-24.04-s"]'
+    secrets:
+      GLOBAL_DM_TOKEN:
+        description: 'Token for Dependency Management'
+        required: true
+      GLOBAL_SCA_TOKEN:
+        description: 'Token for SCA scan'
+        required: true
+      ACR_TOKEN_USER:
+        description: 'ACR Token User'
+        required: true
+      ACR_TOKEN_PW:
+        description: 'ACR Token Password'
+        required: true
+
+jobs:
+  secFullScan:
+    uses: mapfre-tech/sec-tools-security-workflows/.github/workflows/secFullScan.yml@main
+    with:
+      RUNS_ON: ${{ inputs.runs-on || '["ubuntu-24.04-s"]' }}
+    secrets:
+      GLOBAL_DM_TOKEN: ${{ secrets.GLOBAL_DM_TOKEN }}
+      GLOBAL_SCA_TOKEN: ${{ secrets.GLOBAL_SCA_TOKEN }}
+      ACR_TOKEN_USER: ${{ secrets.ACR_TOKEN_USER }}
+      ACR_TOKEN_PW: ${{ secrets.ACR_TOKEN_PW }}

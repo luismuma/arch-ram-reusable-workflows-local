@@ -1,0 +1,159 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Pull Request Workflow. Triggers when:
+#   - A pull request from feature to develop is created / synchronized
+#   - A pull request from hotfix to main is created / synchronized
+#
+# Required secrets:
+#   - AZURE_ARTIFACTS_USER    (Organization)
+#   - AZURE_ARTIFACTS_PW      (Organization)
+#   - SONAR_TOKEN             (Repository) Secret with the SonarQube token
+#   - GH_GIT_TOKEN            (Repository)
+
+name: PR workflow
+run-name: "Build and Test #${{ github.run_number }}: ${{ github.event.pull_request.title }}"
+
+on:  
+  workflow_call:
+    inputs:
+      sonar-project-key: 
+        description: 'Sonar Project Key'
+        required: false
+        type: string
+        default: ''
+      sonar-project-name:
+        description: 'Sonar Project Name'
+        required: false
+        type: string
+        default: ''
+      sonar-params:
+        description: 'Sonar scanner CLI params'
+        required: false
+        type: string
+        default: '-Dsonar.qualitygate.wait=false -Dsonar.sourceEncoding=UTF-8 -Dsonar.typescript.lcov.reportPaths=test/test-reports/coverage/lcov.info -Dsonar.sources=src'
+      node-version:
+        description: 'Node Version'
+        required: false
+        type: string
+        default: 'lts/*'
+      runs-on-sonar:
+        description: 'runs-on to use for Sonar job. Example: ["ubuntu-latest"], ["self-hosted", "mar", "dev"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+
+    secrets:
+      AZURE_ARTIFACTS_USER:
+        description: 'User Azure Artifacts' 
+        required: true
+      AZURE_ARTIFACTS_PW:
+        description: 'Password Azure Artifacts' 
+        required: true
+      SONAR_TOKEN:
+        description: 'Sonar Token'
+        required: false
+      GH_GIT_TOKEN:
+        description: 'GitHub Token for checking out the code'
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+
+jobs:
+
+  # Generate centralized tokens if needed
+  token-generate:
+   if: ( contains(github.event.pull_request.head.ref, 'feature/') || contains(github.event.pull_request.head.ref, 'hotfix/') )
+   uses: ./.github/workflows/token-generate.yml 
+   with:
+      profile: 'reader'
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+     needs: token-generate
+     uses: ./.github/workflows/validate-workflow.yml
+     with:
+        workflow_file: 'pull-request.yml'
+        schema: 'lib.npm.pull-request.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.GH_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ init, token-generate ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  pull-request:
+    needs: init
+    name: Build and Test
+    if: ( contains(github.event.pull_request.head.ref, 'feature/') || contains(github.event.pull_request.head.ref, 'hotfix/') )
+    runs-on: ubuntu-latest
+    outputs:
+      sonar-project-configured: ${{ inputs.sonar-project-key != '' && inputs.sonar-project-name != '' }}
+    steps:
+     
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node/npm environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        uses: mapfre-tech/action-npm/ci@v1
+        with:
+          feed: releases
+          azure_npm_secret: ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      - name: Build
+        uses: mapfre-tech/action-npm/build@bugfix/symlink-exposes-test-files
+  
+      - name: Test
+        uses: mapfre-tech/action-npm/test@bugfix/symlink-exposes-test-files
+
+      # Upload files generated at Build/Test phase and required for sonar scanner step
+      - name: "Upload Build/Test Generated Files"
+        if: inputs.sonar-project-key != '' && inputs.sonar-project-name != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: "required-sonar-scanner-generated-files"
+          path: |
+            test/test-reports
+          retention-days: 1
+
+  # Code Quality/Sonar job
+  code-quality:
+    name: Code Quality (Sonar)
+    needs: pull-request
+    if: fromJSON(needs.pull-request.outputs.sonar-project-configured)
+    runs-on: ${{ fromJSON(inputs.runs-on-sonar) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: "Download Build/Test Generated Files"
+        uses: actions/download-artifact@v6
+        with:
+          name: "required-sonar-scanner-generated-files"
+          path: test/test-reports
+
+      - name: SonarQube Scanner - CLI
+        id: scanner-cli
+        continue-on-error: true
+        uses: mapfre-tech/action-sonarqube/scanner-cli@v1
+        with:
+          projectKey: ${{ inputs.sonar-project-key }}
+          projectName: ${{ inputs.sonar-project-name }}
+          authToken: ${{ secrets.SONAR_TOKEN }}
+          checkQualityGate: 'true'
+          params: ${{ inputs.sonar-params }}

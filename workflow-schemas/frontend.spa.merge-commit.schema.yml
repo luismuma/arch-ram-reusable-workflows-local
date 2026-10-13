@@ -1,0 +1,121 @@
+type: map
+mapping:
+  name:
+    type: str
+    required: true
+  run-name:
+    type: str
+    required: true
+  on:
+    type: map
+    mapping:
+      pull_request:
+        type: map
+        mapping:
+          types:
+            type: seq
+            sequence:
+              - type: str
+          branches:
+            type: seq
+            sequence:
+              - type: str
+  jobs:
+    type: map
+    mapping:
+      merge:
+        type: map
+        mapping:
+          uses:
+            type: str
+          with:
+            type: map
+            mapping:
+              nx-target-app-name:
+                type: str
+                required: true
+              next-snapshot-create-pull-request:
+                type: bool
+                required: false
+          secrets:
+            type: map
+            mapping:
+              AZURE_ARTIFACTS_PW:
+                type: str
+                required: true
+              RAM_GITHUB_GIT_TOKEN:
+                type: str
+                required: false
+              GH_TOKEN_ENCRYPTION_PASSPHRASE:
+                type: str
+                required: false
+              FIREBASE_TOKEN:
+                type: str
+                required: true
+              DOCKER_REGISTRY_USER:
+                type: str
+                required: false
+              DOCKER_REGISTRY_PASSWORD:
+                type: str
+                required: false
+              DIGITALHEALTH_APP_STORE_KEY_ID:
+                type: str
+                required: false
+              DIGITALHEALTH_APP_STORE_ISSUER_ID:
+                type: str
+                required: false
+              DIGITALHEALTH_APP_STORE_ADMIN_API_KEY_P8:
+                type: str
+                required: false
+              MAPFRE_ESP_APP_STORE_KEY_ID:
+                type: str
+                required: false
+              MAPFRE_ESP_APP_STORE_ISSUER_ID:
+                type: str
+                required: false
+              MAPFRE_ESP_APP_STORE_ADMIN_API_KEY_P8:
+                type: str
+                required: false
+              MATCH_PASSWORD:
+                type: str
+                required: false
+              MATCH_GIT_BASIC_AUTHORIZATION:
+                type: str
+                required: false
+              DIGITALHEALTH_ANDROID_KEYSTORE_PASSWORD:
+                type: str
+                required: false
+              DIGITALHEALTH_ANDROID_KEYSTORE_KEY_ALIAS:
+                type: str
+                required: false
+              DIGITALHEALTH_ANDROID_KEYSTORE_KEY_PASSWORD:
+                type: str
+                required: false
+              MAPFRE_ESP_ANDROID_KEYSTORE_PASSWORD:
+                type: str
+                required: false
+              MAPFRE_ESP_ANDROID_KEYSTORE_KEY_ALIAS:
+                type: str
+                required: false
+              MAPFRE_ESP_ANDROID_KEYSTORE_KEY_PASSWORD:
+                type: str
+                required: false
+              MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_PASSWORD:
+                type: str
+                required: false
+              MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_KEY_ALIAS:
+                type: str
+                required: false
+              MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_KEY_PASSWORD:
+                type: str
+                required: false
+              ANDROID_MATCH_GIT_BASIC_AUTHORIZATION:
+                type: str
+                required: false
+              DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:
+                type: str
+                required: false
+              MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:
+                type: str
+                required: false
+

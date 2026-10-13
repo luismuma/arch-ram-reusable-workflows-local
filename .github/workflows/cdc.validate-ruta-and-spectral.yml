@@ -1,0 +1,222 @@
+
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Reusable workflow:
+# - Ejecuta los tests de templating Ruta.
+# - Valida ficheros YAML y JSON contra reglas estructurales de Spectral.
+
+name: Validate Ruta and Spectral
+
+on:
+  workflow_call:
+    inputs:
+      manifest-file:
+        description: 'Manifest file used by Ruta tests'
+        required: false
+        type: string
+        default: 'project-manifest.json'
+
+      templating-test:
+        description: 'Ruta al fichero de test de templating Ruta'
+        required: false
+        type: string
+        default: 'tests/test-templating.py'
+
+      spectral-ruleset:
+        description: 'Ruta al fichero ruleset de Spectral'
+        required: false
+        type: string
+        default: 'spectral/rules/structure/ruleset.yml'
+
+      spectral-files:
+        description: 'Lista de ficheros a validar, uno por línea'
+        required: true
+        type: string
+
+      centralized-tokens:
+        description: 'Indica si el workflow usa tokens centralizados'
+        required: true
+        type: boolean
+
+    secrets:
+      AZURE_ARTIFACTS_USER:
+        description: 'Usuario de Azure Artifacts'
+        required: true
+
+      AZURE_ARTIFACTS_PW:
+        description: 'Password o token de Azure Artifacts'
+        required: true
+
+      GH_GIT_TOKEN:
+        description: 'Token para checkout y acceso autenticado a GitHub'
+        required: false
+
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase para descifrar el token centralizado'
+        required: false
+
+jobs:
+  # ==================================================
+  # 1. Validación de templating Ruta
+  # ==================================================
+  validate-templating:
+    name: Validate Ruta Templating
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    env:
+      MANIFEST_FILE: ${{ inputs.manifest-file }}
+      CENTRALIZED_TOKENS: ${{ inputs.centralized-tokens }}
+      AZURE_ARTIFACTS_USER: ${{ secrets.AZURE_ARTIFACTS_USER }}
+      AZURE_ARTIFACTS_PW: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      GH_GIT_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_GIT_TOKEN || secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+          if [[ -f "pyproject.toml" ]]; then
+            python -m pip install ".[test]" || python -m pip install .
+          elif [[ -f "requirements.txt" ]]; then
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Verify Ruta test file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test_file="${{ inputs.templating-test }}"
+
+          if [[ ! -f "${test_file}" ]]; then
+            echo "::error file=${test_file}::No existe el fichero de test Ruta."
+            exit 1
+          fi
+
+          echo "OK: ${test_file}"
+
+      - name: Run Ruta templating tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pytest "${{ inputs.templating-test }}" \
+            --verbose \
+            --tb=short
+
+  # ==================================================
+  # 2. Validación estructural con Spectral
+  # ==================================================
+  validate-spectral-structure:
+    name: Validate Structure with Spectral
+    runs-on: ubuntu-latest
+    needs:
+      - validate-templating
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_GIT_TOKEN || secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.19.1'
+
+      - name: Install Spectral CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save @stoplight/spectral-cli@6.15.0
+
+      - name: Verify configuration files
+        shell: bash
+        env:
+          SPECTRAL_FILES: ${{ inputs.spectral-files }}
+        run: |
+          set -euo pipefail
+
+          echo "================================================"
+          echo "Comprobando ficheros de configuración"
+          echo "================================================"
+
+          while IFS= read -r file || [[ -n "${file}" ]]; do
+            [[ -z "${file//[[:space:]]/}" ]] && continue
+
+            if [[ ! -f "${file}" ]]; then
+              echo "::error file=${file}::No existe el fichero."
+              exit 1
+            fi
+
+            echo "OK: ${file}"
+          done <<< "${SPECTRAL_FILES}"
+
+      - name: Verify Spectral ruleset
+        shell: bash
+        env:
+          SPECTRAL_RULESET: ${{ inputs.spectral-ruleset }}
+        run: |
+          set -euo pipefail
+
+          echo "================================================"
+          echo "Comprobando configuración de reglas Spectral"
+          echo "================================================"
+
+          if [[ ! -f "${SPECTRAL_RULESET}" ]]; then
+            echo "::error file=${SPECTRAL_RULESET}::No existe el ruleset."
+            exit 1
+          fi
+
+          echo "OK: ${SPECTRAL_RULESET}"
+
+      - name: Validate files with Spectral
+        shell: bash
+        env:
+          SPECTRAL_FILES: ${{ inputs.spectral-files }}
+          SPECTRAL_RULESET: ${{ inputs.spectral-ruleset }}
+        run: |
+          set -euo pipefail
+
+          echo "================================================"
+          echo "Validando estructura con Spectral"
+          echo "================================================"
+
+          while IFS= read -r file || [[ -n "${file}" ]]; do
+            [[ -z "${file//[[:space:]]/}" ]] && continue
+
+            echo "Validando: ${file}"
+
+            npx --no-install spectral lint "${file}" \
+              --ruleset "${SPECTRAL_RULESET}" \
+              --verbose
+          done <<< "${SPECTRAL_FILES}"
+
+          echo "================================================"
+          echo "Validación Spectral finalizada correctamente"
+          echo "================================================"

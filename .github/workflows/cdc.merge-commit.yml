@@ -1,0 +1,330 @@
+
+# Copyright (c) MAPFRE DevOps Platform
+#
+# CDC Merge Commit Workflow.
+#
+# Triggers:
+#   - A feature/* PR to develop is merged
+#   - A hotfix/* PR to main is merged
+#
+# Output:
+#   - CDC archetype ZIP
+#   - Snapshot package for develop
+#   - Release package for main/master
+#
+# Required secrets:
+#   - AZURE_ARTIFACTS_USER
+#   - AZURE_ARTIFACTS_PW
+#   - RAM_GITHUB_GIT_TOKEN
+
+name: CDC Merge Commit
+
+run-name: >-
+  Generate ${{ (github.base_ref == 'main' || github.base_ref == 'master')
+  && 'Release' || 'Snapshot' }} Artifact #${{ github.run_number }}
+
+on:
+  workflow_call:
+    inputs:
+      next-snapshot-create-pull-request:
+        description: 'Create Pull Request for the next development version'
+        required: false
+        type: boolean
+        default: true
+
+      manifest-file:
+        description: 'Path to the project manifest'
+        required: false
+        type: string
+        default: 'project-manifest.json'
+
+      snapshot-format:
+        description: 'Snapshot version format ({0}=version, {1}=run number)'
+        required: false
+        type: string
+        default: '{0}-{1}'
+
+    secrets:
+      AZURE_ARTIFACTS_USER:
+        description: 'User Azure Artifacts'
+        required: true
+
+      AZURE_ARTIFACTS_PW:
+        description: 'Password Azure Artifacts'
+        required: true
+
+      RAM_GITHUB_GIT_TOKEN:
+        description: 'GitHub token'
+        required: false
+
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+
+env:
+  IS_RELEASE: ${{ github.base_ref == 'main' || github.base_ref == 'master' }}
+
+jobs:
+
+  # ==========================================================
+  # 1. GENERATE CENTRALIZED TOKENS
+  # ==========================================================
+  token-generate:
+    name: Generate Centralized Tokens
+
+    if: >-
+      github.event.pull_request.merged == true &&
+      !startsWith(github.head_ref, 'release/branch--')
+
+    uses: ./.github/workflows/token-generate.yml
+
+    with:
+      profile: deployer
+
+    secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  # ==========================================================
+  # 2. VALIDATE MERGE WORKFLOW
+  # ==========================================================
+  init:
+    name: Validate CDC Merge Workflow
+
+    needs:
+      - token-generate
+
+    if: >-
+      always() &&
+      (
+        needs.token-generate.result == 'success' ||
+        needs.token-generate.result == 'skipped'
+      )
+
+    uses: ./.github/workflows/validate-workflow.yml
+
+    with:
+      workflow_file: cdc.merge-commit.yml
+      schema: merge-commit.schema.yml
+      centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
+
+    secrets:
+      GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  # ==========================================================
+  # 3. CREATE AND PUBLISH CDC ZIP ARTIFACT
+  # ==========================================================
+  merge:
+    name: >-
+      Generate ${{ (github.base_ref == 'main' || github.base_ref == 'master')
+      && 'Release' || 'Snapshot' }} CDC Artifact
+
+    needs:
+      - init
+      - token-generate
+
+    if: >-
+      always() &&
+      needs.init.result == 'success' &&
+      (
+        needs.token-generate.result == 'success' ||
+        needs.token-generate.result == 'skipped'
+      ) &&
+      github.event.pull_request.merged == true &&
+      (
+        (startsWith(github.head_ref, 'feature/') && github.base_ref == 'develop') ||
+        (startsWith(github.head_ref, 'hotfix/') && github.base_ref == 'main')
+      )
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      published-version: ${{ steps.version.outputs.version }}
+      artifact-file: ${{ steps.package.outputs.artifact }}
+
+    steps:
+
+      # --------------------------------------------------------
+      # 3.1 Decrypt token when centralized tokens are enabled
+      # --------------------------------------------------------
+      - name: Decrypt token
+        id: decrypt
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+
+        with:
+          token: ${{ needs.token-generate.outputs.token }}
+          gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      # --------------------------------------------------------
+      # 3.2 Checkout the merged code
+      # --------------------------------------------------------
+      - name: Checkout merged code
+        uses: actions/checkout@v6
+
+        with:
+          ref: ${{ github.base_ref }}
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+      # --------------------------------------------------------
+      # 3.3 Read manifest metadata
+      # --------------------------------------------------------
+      - name: Read project name
+        id: read-name
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+
+        with:
+          file: ${{ inputs.manifest-file }}
+          attribute: name
+
+      - name: Read project version
+        id: read-version
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+
+        with:
+          file: ${{ inputs.manifest-file }}
+          attribute: version
+
+      - name: Read project description
+        id: read-description
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+
+        with:
+          file: ${{ inputs.manifest-file }}
+          attribute: description
+
+      # --------------------------------------------------------
+      # 3.4 Determine artifact version
+      # --------------------------------------------------------
+      - name: Calculate artifact version
+        id: version
+        shell: bash
+
+        env:
+          PROJECT_VERSION: ${{ steps.read-version.outputs.value }}
+          SNAPSHOT_FORMAT: ${{ inputs.snapshot-format }}
+          RUN_NUMBER: ${{ github.run_number }}
+          IS_RELEASE: ${{ env.IS_RELEASE }}
+
+        run: |
+          set -euo pipefail
+
+          if [[ "${IS_RELEASE}" == "true" ]]; then
+            VERSION="${PROJECT_VERSION%%-*}"
+          else
+            VERSION="${SNAPSHOT_FORMAT//\{0\}/${PROJECT_VERSION}}"
+            VERSION="${VERSION//\{1\}/${RUN_NUMBER}}"
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Artifact version: ${VERSION}"
+
+      # --------------------------------------------------------
+      # 3.5 Create ZIP artifact
+      # --------------------------------------------------------
+      - name: Create CDC ZIP artifact
+        id: package
+        shell: bash
+
+        env:
+          PROJECT_NAME: ${{ steps.read-name.outputs.value }}
+
+        run: |
+          set -euo pipefail
+
+          ARTIFACT_DIR="publish_artifact"
+          ZIP_FILE="${ARTIFACT_DIR}/${PROJECT_NAME}.zip"
+
+          mkdir -p "${ARTIFACT_DIR}"
+          rm -f "${ZIP_FILE}"
+
+          # Include the CDC archetype files and FreeMarker templates.
+          # Exclude Git metadata, workflows and the output directory.
+          zip -r "${ZIP_FILE}" . \
+            -x ".git/*" \
+               ".github/*" \
+               ".gitignore" \
+               "publish_artifact/*"
+
+          test -s "${ZIP_FILE}"
+          unzip -t "${ZIP_FILE}"
+
+          echo "artifact=${ZIP_FILE}" >> "$GITHUB_OUTPUT"
+
+          echo "Created artifact: ${ZIP_FILE}"
+          ls -lh "${ZIP_FILE}"
+
+      # --------------------------------------------------------
+      # 3.6 Publish SNAPSHOT to Azure Artifacts
+      # --------------------------------------------------------
+      - name: Publish Snapshot Artifact
+        if: env.IS_RELEASE != 'true'
+
+        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+
+        with:
+          feed: snapshots
+          packageName: ${{ steps.read-name.outputs.value }}
+          version: ${{ steps.version.outputs.version }}
+          path: publish_artifact
+          description: >-
+            ${{ steps.read-name.outputs.value }}
+            ${{ steps.version.outputs.version }}
+            CDC snapshot
+            ${{ steps.read-description.outputs.value }}
+          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      # --------------------------------------------------------
+      # 3.7 Publish RELEASE to Azure Artifacts
+      # --------------------------------------------------------
+      - name: Publish Release Artifact
+        if: env.IS_RELEASE == 'true'
+
+        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+
+        with:
+          feed: releases
+          packageName: ${{ steps.read-name.outputs.value }}
+          version: ${{ steps.version.outputs.version }}
+          path: publish_artifact
+          description: >-
+            ${{ steps.read-name.outputs.value }}
+            ${{ steps.version.outputs.version }}
+            CDC release
+            ${{ steps.read-description.outputs.value }}
+          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      # --------------------------------------------------------
+      # 3.8 Upload ZIP to GitHub Actions artifacts too
+      # --------------------------------------------------------
+      - name: Upload ZIP as workflow artifact
+        uses: actions/upload-artifact@v4
+
+        with:
+          name: ${{ steps.read-name.outputs.value }}-${{ steps.version.outputs.version }}
+          path: ${{ steps.package.outputs.artifact }}
+          if-no-files-found: error
+          retention-days: 30
+
+  # ==========================================================
+  # 4. REVOKE CENTRALIZED TOKENS
+  # ==========================================================
+  revoke-tokens:
+    name: Revoke Centralized Tokens
+
+    needs:
+      - token-generate
+      - merge
+
+    if: >-
+      always() &&
+      needs.token-generate.outputs.centralized-tokens == 'true'
+
+    uses: ./.github/workflows/token-revoke.yml
+
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}

@@ -1,0 +1,605 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Merge Commit Workflow. Triggers when:
+#   - A pull request to develop is closed and merged
+#   - A pull request to main is closed and merged
+#
+# Required secrets:
+#   - AZURE_ARTIFACTS_PW      (Organization)
+#   - RAM_GITHUB_GIT_TOKEN    (Repository)
+#   - MATCH_PASSWORD          (Repository)
+#   - FIREBASE_TOKEN          (Repository)
+name: Merge Commit
+run-name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact #${{ github.run_number }}"
+on:
+  workflow_call:
+    inputs:
+      xcode-version:
+        description: "xcode version"
+        required: false
+        default: '16.2'
+        type: string
+      ruby-version:
+        description: "Ruby version"
+        required: false
+        default: '3.3.7'
+        type: string
+      java-version:
+        description: "Java version"
+        required: false
+        default: '17'
+        type: string
+      jdk-distribution:
+        description: "JDK distribution"
+        required: false
+        default: 'temurin'
+        type: string
+      nx-target-app-name:
+        description: "Name of the nx application to build and publish to Apple and Google stores"
+        required: false
+        type: string
+      next-snapshot-create-pull-request:
+        description: "Create Pull Request to develop"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      # common
+      DOCKER_REGISTRY_USER:
+        required: true
+      DOCKER_REGISTRY_PASSWORD:
+        required: true
+      AZURE_ARTIFACTS_PW:
+        description: "Password Azure Artifacts"
+        required: true
+      RAM_GITHUB_GIT_TOKEN:
+        description: "GitHub Token for creating Pull Request to develop"
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+      FIREBASE_TOKEN:
+        description: "Firebase token"
+        required: false
+      # ios
+      MATCH_PASSWORD:
+        description: "iOs match password"
+        required: false
+      MATCH_GIT_BASIC_AUTHORIZATION:
+        description: "Base64 git basic authorization with read and write access to at least the following repositories: [https://github.com/mapfre-tech/arch-ram-ios-certificates, https://github.com/mapfre-tech/arch-ram-ios-certificates-dist]"
+        required: false
+      DIGITALHEALTH_APP_STORE_KEY_ID:
+        required: false
+      DIGITALHEALTH_APP_STORE_ISSUER_ID:
+        required: false
+      DIGITALHEALTH_APP_STORE_ADMIN_API_KEY_P8:
+        required: false
+      MAPFRE_ESP_APP_STORE_KEY_ID:
+        required: false
+      MAPFRE_ESP_APP_STORE_ISSUER_ID:
+        required: false
+      MAPFRE_ESP_APP_STORE_ADMIN_API_KEY_P8:
+      # android
+      ANDROID_MATCH_GIT_BASIC_AUTHORIZATION:
+        description: "Base64 git basic authorization with read and write access to at least the following repositories: [https://github.com/mapfre-tech/arch-ram-android-keystores]"
+        required: false
+      DIGITALHEALTH_ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      DIGITALHEALTH_ANDROID_KEYSTORE_KEY_ALIAS:
+        required: false
+      DIGITALHEALTH_ANDROID_KEYSTORE_KEY_PASSWORD:
+        required: false
+      DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:
+        required: false
+      MAPFRE_ESP_ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      MAPFRE_ESP_ANDROID_KEYSTORE_KEY_ALIAS:
+        required: false
+      MAPFRE_ESP_ANDROID_KEYSTORE_KEY_PASSWORD:
+        required: false
+      MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:
+        required: false
+      MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_KEY_ALIAS:
+        required: false
+      MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_KEY_PASSWORD:
+        required: false
+env:
+  # Merge to main/master (base_ref)
+  IS_RELEASE: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+  CACHE_NAME: "npm-cache"
+  AZURE_DEVOPS_ORGANIZATION: "https://dev.azure.com/devopsmapfre"
+jobs:
+  # Generate centralized tokens if needed
+  token-generate:
+   #https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#running-your-pull_request_target-workflow-when-a-pull-request-merges
+   if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }} 
+   uses: ./.github/workflows/token-generate.yml  
+   with:
+      profile: 'deployer'
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+    needs: token-generate
+    uses: ./.github/workflows/validate-workflow.yml
+    with:
+      workflow_file: 'merge-commit.yml'
+      schema: 'frontend.spa.merge-commit.schema.yml'
+      centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+    secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+  prepare-version:
+    needs: [ init, token-generate ]
+    name: "Prepare ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} #${{ github.run_number }}"
+    if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }}
+    runs-on: ubuntu-latest
+    outputs:
+      current-version: ${{ steps.read-version.outputs.value }}
+      component-id: ${{ steps.read-component-id.outputs.value }}
+      next-snapshot-version: ${{ steps.get-snapshot-version.outputs.version }}
+      next-release-version: ${{ steps.npm-next-release-version.outputs.nextVersion }}
+      is-release: ${{ steps.set-is-release.outputs.is_release }}
+      capacitor: ${{ steps.check_capacitor.outputs.capacitor }}
+    steps:
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+      - name: Setup Node/npm environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Get cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-build-${{ env.CACHE_NAME }}-${{ hashFiles('**/package-lock.json') }}
+      # Run 'npm ci' on .
+      - name: Install dependencies
+        uses: mapfre-tech/action-npm/ci@v1
+        with:
+          feed: "releases"
+          azure_npm_secret: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      - name: Check for capacitor
+        id: check_capacitor
+        run: |
+          if [ -f "apps/${{ inputs.nx-target-app-name }}/capacitor.config.ts" ]; then
+            echo "capacitor=true" >> $GITHUB_OUTPUT
+
+          else
+            echo "capacitor=false" >> $GITHUB_OUTPUT
+          fi
+      - name: read-version
+        id: read-version
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        with:
+          file: ./package.json
+          attribute: version
+      - name: read-component-id
+        id: read-component-id
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        with:
+          file: ./package.json
+          attribute: name
+      - name: Set is_release output
+        id: set-is-release
+        run: echo "is_release=${{ env.IS_RELEASE }}" >> $GITHUB_OUTPUT
+        # Prepare release -> set package.json release version
+      - name: Prepare release
+        id: npm-next-release-version
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-npm/next-release-version@v1
+        with:
+          current-version: ${{ steps.read-version.outputs.value }}
+      - name: Snapshot version
+        id: get-snapshot-version
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        run: |
+          echo "version=${{ format('{0}.{1}', steps.read-version.outputs.value,  github.run_number) }}" >> $GITHUB_OUTPUT
+  release-web:
+    name: "Release ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'web dist' || 'web' }}"
+    needs: 
+      - init
+      - prepare-version
+      - token-generate
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_REGISTRY: acrmapfredevops.azurecr.io
+      DOCKER_REGISTRY_USER: ${{ secrets.DOCKER_REGISTRY_USER }}
+      DOCKER_REGISTRY_PASSWORD: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+    steps:
+
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+      - name: Setup Node/npm environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Get cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-build-${{ env.CACHE_NAME }}-${{ hashFiles('**/package-lock.json') }}
+          # Run 'npm ci' on .
+      - name: Install dependencies
+        uses: mapfre-tech/action-npm/ci@v1
+        with:
+          feed: "releases"
+          azure_npm_secret: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      - name: "Set ${{ fromJson(env.IS_RELEASE) && 'release' || 'snapshot' }} version"
+        id: set-version
+        uses: mapfre-tech/action-npm/set-version@v1
+        with:
+          version: ${{ fromJson(env.IS_RELEASE) && needs.prepare-version.outputs.next-release-version || needs.prepare-version.outputs.next-snapshot-version }}
+      - name: Install AZ cli
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+      - name: Login to Azure DevOps
+        run: |
+          echo ${{ secrets.AZURE_ARTIFACTS_PW }} | az devops login --organization ${{ env.AZURE_DEVOPS_ORGANIZATION }}
+      - name: Release web prerelease
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        env:
+          WORKSPACE_VERSION: ${{ needs.prepare-version.outputs.next-snapshot-version }}
+        # run: |
+        #   npx nx run-many --target release-spa --verbose --output-style stream
+        run: npx nx run workspace:ci-release-web:prerelease --verbose --output-style stream
+      - name: Release web stable
+        if: ${{ fromJson(env.IS_RELEASE) }}
+        env:
+          WORKSPACE_VERSION: ${{ needs.prepare-version.outputs.next-release-version }}
+        # run: |
+        #   npx nx run workspace:ci-release-web --verbose --output-style stream
+        run: npx nx run workspace:ci-release-web:production --verbose --output-style stream
+  release-android:
+    name: "Release ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'android dist' || 'android' }}"
+    needs: 
+      - init
+      - prepare-version
+      - token-generate
+    if: ${{ needs.prepare-version.outputs.capacitor == 'true'}}
+    runs-on: ubuntu-latest
+    env:
+      VERSION_CODE_INCREMENTAL: ${{ github.run_number }}
+      DIGITALHEALTH_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.DIGITALHEALTH_ANDROID_KEYSTORE_PASSWORD }}
+      DIGITALHEALTH_ANDROID_KEYSTORE_KEY_ALIAS: ${{ secrets.DIGITALHEALTH_ANDROID_KEYSTORE_KEY_ALIAS }}
+      DIGITALHEALTH_ANDROID_KEYSTORE_KEY_PASSWORD: ${{ secrets.DIGITALHEALTH_ANDROID_KEYSTORE_KEY_PASSWORD }}
+      MAPFRE_ESP_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.MAPFRE_ESP_ANDROID_KEYSTORE_PASSWORD }}
+      MAPFRE_ESP_ANDROID_KEYSTORE_KEY_ALIAS: ${{ secrets.MAPFRE_ESP_ANDROID_KEYSTORE_KEY_ALIAS }}
+      MAPFRE_ESP_ANDROID_KEYSTORE_KEY_PASSWORD: ${{ secrets.MAPFRE_ESP_ANDROID_KEYSTORE_KEY_PASSWORD }}
+      MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_PASSWORD }}
+      MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_KEY_ALIAS: ${{ secrets.MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_KEY_ALIAS }}
+      MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_KEY_PASSWORD: ${{ secrets.MAPFRE_ESP_ENTERPRISE_ANDROID_KEYSTORE_KEY_PASSWORD }}
+      FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+      ANDROID_MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.ANDROID_MATCH_GIT_BASIC_AUTHORIZATION }}
+    steps:
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Check required secrets
+        run: |
+          missing_secrets=""
+          if [ -z "${FIREBASE_TOKEN}" ]; then
+            missing_secrets="${missing_secrets} FIREBASE_TOKEN"
+          fi
+          if [ -z "${ANDROID_MATCH_GIT_BASIC_AUTHORIZATION}" ]; then
+            missing_secrets="${missing_secrets} ANDROID_MATCH_GIT_BASIC_AUTHORIZATION"
+          fi
+          if [ -n "${missing_secrets}" ]; then
+            echo "Error: The following required secrets are missing:${missing_secrets}"
+            exit 1
+          fi
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+      - name: Setup Node/npm environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Get cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-build-${{ env.CACHE_NAME }}-${{ hashFiles('**/package-lock.json') }}
+          # Run 'npm ci' on .
+      - name: Install dependencies
+        uses: mapfre-tech/action-npm/ci@v1
+        with:
+          feed: "releases"
+          azure_npm_secret: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      - name: "Set ${{ fromJson(env.IS_RELEASE) && 'release' || 'snapshot' }} version"
+        id: set-version
+        uses: mapfre-tech/action-npm/set-version@v1
+        with:
+          version: ${{ fromJson(env.IS_RELEASE) && needs.prepare-version.outputs.next-release-version || needs.prepare-version.outputs.next-snapshot-version }}
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: ${{ inputs.jdk-distribution }}
+      - name: Setup ruby
+        uses: ruby/setup-ruby@v1
+        env:
+          BUNDLE_GITHUB__COM: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        with:
+          ruby-version: ${{ inputs.ruby-version }}
+          bundler-cache: true
+      - name: Bundle install
+        env:
+          BUNDLE_GITHUB__COM: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        run: |
+          bundle install || true
+      - name: Install AZ cli
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az extension update --name azure-devops
+      - name: Login to Azure DevOps
+        run: |
+          echo ${{ secrets.AZURE_ARTIFACTS_PW }} | az devops login --organization ${{ env.AZURE_DEVOPS_ORGANIZATION }}
+      - name: Setup Android Platforms
+        run: yes | sdkmanager "platforms;android-30" || true
+      - name: Decode and set DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON env variable
+        if: ${{ fromJson(env.IS_RELEASE) }}
+        env:
+          DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64: ${{ secrets.DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64" ]; then
+            echo $DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 | base64 --decode > decoded_secret.json
+            DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON=$(cat decoded_secret.json)
+            echo "::add-mask::$DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"
+            echo "DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON=$DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" >> $GITHUB_ENV
+            rm -f decoded_secret.json
+          else
+            echo "DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON secret is not set. Skipping step."
+          fi
+      - name: Decode and set MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON env variable
+        if: ${{ fromJson(env.IS_RELEASE) }}
+        env:
+          MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64: ${{ secrets.MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64" ]; then
+            echo $MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 | base64 --decode > decoded_secret.json
+            MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON=$(cat decoded_secret.json)
+            echo "::add-mask::$MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"
+            echo "MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON=$MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" >> $GITHUB_ENV
+            rm -f decoded_secret.json
+          else 
+            echo "MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON secret is not set. Skipping step."
+          fi
+      - name: Release Android prerelease
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        env:
+          VERSION_CODE_INCREMENTAL: ${{ github.run_number }}
+        run: |
+          npx nx release-android ${{ inputs.nx-target-app-name }} --configuration production --verbose --output-style stream
+        # run: npx nx run workspace:ci-release-android --configuration prerelease --verbose --output-style stream
+      - name: Release Android stable
+        if: ${{ fromJson(env.IS_RELEASE) }}
+        env:
+          DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ env.DIGITALHEALTH_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ env.MAPFRE_ESP_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          npx nx release-android ${{ inputs.nx-target-app-name }} --configuration production --verbose --output-style stream
+          npx nx release-android-dist ${{ inputs.nx-target-app-name }} --configuration production --verbose --output-style stream
+        # run: npx nx run workspace:ci-release-android --configuration production --output-style stream
+  release-ios:
+    name: "Release ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'ios dist' || 'ios' }}"
+    if: ${{ needs.prepare-version.outputs.capacitor == 'true'}}
+    needs: 
+      - init
+      - prepare-version
+      - token-generate
+    runs-on: macos-latest
+    env:
+      VERSION_CODE_INCREMENTAL: ${{ github.run_number }}
+      AZURE_ARTIFACTS_PW: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+      FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+    steps:
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Check required secrets
+        run: |
+          missing_secrets=""
+          if [ -z "${MATCH_PASSWORD}" ]; then
+            missing_secrets="${missing_secrets} MATCH_PASSWORD"
+          fi
+          if [ -z "${MATCH_GIT_BASIC_AUTHORIZATION}" ]; then
+            missing_secrets="${missing_secrets} MATCH_GIT_BASIC_AUTHORIZATION"
+          fi
+          if [ -z "${FIREBASE_TOKEN}" ]; then
+            missing_secrets="${missing_secrets} FIREBASE_TOKEN"
+          fi
+          if [ -n "${missing_secrets}" ]; then
+            echo "Error: The following required secrets are missing:${missing_secrets}"
+            exit 1
+          fi
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+      - name: Setup Node/npm environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Get cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-build-${{ env.CACHE_NAME }}-${{ hashFiles('**/package-lock.json') }}
+      - name: Install dependencies
+        uses: mapfre-tech/action-npm/ci@v1
+        with:
+          feed: "releases"
+          azure_npm_secret: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      - name: List available Xcode versions
+        run: ls /Applications | grep Xcode
+      - name: Select Xcode version
+        run: sudo xcode-select -s '/Applications/Xcode_${{ inputs.xcode-version }}.app/Contents/Developer'
+      - name: Show current version of Xcode
+        run: xcodebuild -version
+      - name: "Set ${{ fromJson(env.IS_RELEASE) && 'release' || 'snapshot' }} version"
+        id: set-version
+        uses: mapfre-tech/action-npm/set-version@v1
+        with:
+          version: ${{ fromJson(env.IS_RELEASE) && needs.prepare-version.outputs.next-release-version || needs.prepare-version.outputs.next-snapshot-version }}
+      - name: Setup ruby
+        uses: ruby/setup-ruby@v1
+        env:
+          BUNDLE_GITHUB__COM: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        with:
+          ruby-version: ${{ inputs.ruby-version }}
+          bundler-cache: true
+      - name: Bundle install
+        env:
+          BUNDLE_GITHUB__COM: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        run: |
+          bundle install || true
+      - name: Show cocoapods version
+        run: pod --version
+      - name: Install AZ cli
+        run: |
+          if ! command -v az &> /dev/null; then
+            echo "Azure CLI not found. Installing..."
+            brew update && brew install azure-cli
+          else
+            echo "Azure CLI is already installed."
+          fi
+      - name: Release iOS prerelease
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        run: |
+          npx nx release-ios ${{ inputs.nx-target-app-name }} --verbose --output-style stream
+        # run: npx nx run workspace:ci-release-ios --configuration prerelease --verbose --output-style stream
+      - name: Release iOS stable
+        if: ${{ fromJson(env.IS_RELEASE) }}
+        env:
+          DIGITALHEALTH_APP_STORE_KEY_ID: ${{ secrets.DIGITALHEALTH_APP_STORE_KEY_ID }}
+          DIGITALHEALTH_APP_STORE_ISSUER_ID: ${{ secrets.DIGITALHEALTH_APP_STORE_ISSUER_ID }}
+          DIGITALHEALTH_APP_STORE_ADMIN_API_KEY_P8: ${{ secrets.DIGITALHEALTH_APP_STORE_ADMIN_API_KEY_P8 }}
+          MAPFRE_ESP_APP_STORE_KEY_ID: ${{ secrets.MAPFRE_ESP_APP_STORE_KEY_ID }}
+          MAPFRE_ESP_APP_STORE_ISSUER_ID: ${{ secrets.MAPFRE_ESP_APP_STORE_ISSUER_ID }}
+          MAPFRE_ESP_APP_STORE_ADMIN_API_KEY_P8: ${{ secrets.MAPFRE_ESP_APP_STORE_ADMIN_API_KEY_P8 }}
+        run: |
+          npx nx release-ios ${{ inputs.nx-target-app-name }} --verbose --output-style stream
+          npx nx release-ios-dist ${{ inputs.nx-target-app-name }} --verbose --output-style stream
+        # run: npx nx run workspace:ci-release-ios --configuration production --verbose --output-style stream
+  release-promotion:
+    name: "Promote release"
+    needs: [ "init", "prepare-version", "release-web", "release-android", "release-ios", "token-generate"]
+    if: ${{ always() && needs.release-web.result == 'success' && (needs.release-android.result == 'success' || needs.release-android.result == 'skipped') && (needs.release-ios.result == 'success' || needs.release-ios.result == 'skipped') && github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') && fromJson(needs.prepare-version.outputs.is-release) }}
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+            
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+      - name: Setup Node/npm environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Get cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-build-${{ env.CACHE_NAME }}-${{ hashFiles('**/package-lock.json') }}
+          # Run 'npm ci' on .
+      - name: Install dependencies
+        uses: mapfre-tech/action-npm/ci@v1
+        with:
+          feed: "releases"
+          azure_npm_secret: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      - name: read-version
+        id: read-version
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        with:
+          file: ./package.json
+          attribute: version
+      - name: read-component-id
+        id: read-component-id
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        with:
+          file: ./package.json
+          attribute: name
+          # Prepare release -> set package.json release version
+      - name: Prepare release
+        id: npm-next-release-version
+        uses: mapfre-tech/action-npm/next-release-version@v1
+        with:
+          current-version: ${{ steps.read-version.outputs.value }}
+      # Git tag and push
+      - name: Tag Git Repository
+        uses: mapfre-tech/action-git/tag-push@v1
+        with:
+          tag: ${{ steps.npm-next-release-version.outputs.nextVersion }}
+          message: "${{ steps.read-component-id.outputs.value }} ${{ steps.npm-next-release-version.outputs.nextVersion }}"
+      # Prepare next iteration
+      - name: Next Snapshot (Set next version in package.json)
+        id: next-snapshot
+        uses: mapfre-tech/action-npm/next-dev-version@v1
+        with:
+          new-version: ${{ steps.npm-next-release-version.outputs.nextVersion }}
+          dev-identifier: snapshot
+      # Commit package.json
+      - name: Next Snapshot (Git Commit & Push package.json)
+        uses: mapfre-tech/action-git/commit-push@v1
+        with:
+          filename: package.json
+          message: promotion to next development version (${{ steps.next-snapshot.outputs.nextVersion }}) completed
+          branch: ${{github.base_ref}}
+          create-pull-request: true
+          pull-request-title: Next development version (${{ steps.next-snapshot.outputs.nextVersion }})
+          github-token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ token-generate, release-promotion ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}

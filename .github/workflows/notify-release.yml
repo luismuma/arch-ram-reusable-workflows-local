@@ -1,0 +1,73 @@
+---
+name: Notify release to support repo
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag name (e.g. v1.0.0)"
+        required: true
+        default: "v0.0.0-test"
+      release_url:
+        description: "Release URL"
+        required: false
+        default: "https://github.com/mapfre-tech/arch-ram-reusable-workflows"
+      release_body:
+        description: "Release notes body"
+        required: false
+        default: "Test manual dispatch — not a real release."
+      author:
+        description: "Author login"
+        required: false
+        default: "github-actions"
+      published_at:
+        description: "Published date (YYYY-MM-DD)"
+        required: false
+        default: ""
+      target:
+        description: "Target branch"
+        required: false
+        default: "main"
+
+jobs:
+  open-issue:
+    name: Open issue in esp-pfdevops-support
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create issue
+        env:
+          GH_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag_name }}
+          RELEASE_URL: >-
+            ${{ github.event.release.html_url || inputs.release_url }}
+          RELEASE_BODY: ${{ github.event.release.body || inputs.release_body }}
+          AUTHOR: >-
+            ${{ github.event.release.author.login || inputs.author }}
+          PUBLISHED_AT: >-
+            ${{ github.event.release.published_at || inputs.published_at }}
+          TARGET: >-
+            ${{ github.event.release.target_commitish || inputs.target }}
+        run: |
+          DATE=${PUBLISHED_AT:-$(date -u +%Y-%m-%d)}
+          TITLE="🚀 Nueva versión: arch-ram-reusable-workflows ${RELEASE_TAG}"
+          BODY="## 🚀 Nueva versión publicada"
+          BODY="${BODY}"$'\n\n'
+          BODY="${BODY}""| Campo | Valor |"
+          BODY="${BODY}"$'\n'"| --- | --- |"
+          BODY="${BODY}"$'\n'"| 📦 Versión | \`${RELEASE_TAG}\` |"
+          BODY="${BODY}"$'\n'"| 👤 Autor | @${AUTHOR} |"
+          BODY="${BODY}"$'\n'"| 📅 Fecha | ${DATE} |"
+          BODY="${BODY}"$'\n'"| 🌿 Rama | \`${TARGET}\` |"
+          BODY="${BODY}"$'\n'"| 🔗 Release | [Ver en GitHub](${RELEASE_URL}) |"
+          BODY="${BODY}"$'\n\n'"## 📋 Release Notes"
+          BODY="${BODY}"$'\n\n'"${RELEASE_BODY}"
+          BODY="${BODY}"$'\n\n'"## ✅ Acciones"
+          BODY="${BODY}"$'\n'"- [ ] Revisar cambios"
+          BODY="${BODY}"$'\n'"- [ ] Actualizar referencia en workflows"
+          BODY="${BODY}"$'\n'"- [ ] Validar en entorno de pruebas"
+          gh issue create \
+            --repo mapfre-tech/esp-pfdevops-support \
+            --title "${TITLE}" \
+            --body "${BODY}"

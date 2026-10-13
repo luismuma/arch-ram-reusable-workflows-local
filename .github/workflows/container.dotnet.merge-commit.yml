@@ -1,0 +1,156 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Merge Commit Workflow for .NET containers.
+
+name: .NET Container Merge Commit
+run-name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact #${{ github.run_number }}"
+
+on:
+  workflow_call:
+    inputs:
+      acr-folder:
+        description: 'ACR folder'
+        required: true
+        type: string
+      dotnet-root:
+        description: 'Directory containing global.json and the solution'
+        required: false
+        type: string
+        default: 'dotnet'
+      solution-file:
+        description: 'Solution file relative to dotnet-root'
+        required: false
+        type: string
+        default: 'Ram.Microservice.sln'
+      project-file:
+        description: 'Project file used to read ContainerRepository and Version'
+        required: false
+        type: string
+        default: 'sources/src/Api/Api.csproj'
+      nuget-config:
+        description: 'NuGet config relative to dotnet-root'
+        required: false
+        type: string
+        default: 'nuget.config'
+      configuration:
+        description: '.NET build configuration'
+        required: false
+        type: string
+        default: 'Release'
+      dockerfile-path:
+        description: 'Dockerfile path relative to the repository'
+        required: false
+        type: string
+        default: 'docker/Dockerfile'
+      docker-context:
+        description: 'Docker build context'
+        required: false
+        type: string
+        default: '.'
+    secrets:
+      ACR_TOKEN_USER:
+        description: 'ACR user'
+        required: true
+      ACR_TOKEN_PW:
+        description: 'ACR password'
+        required: true
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: true
+
+env:
+  IS_RELEASE: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+
+jobs:
+  token-generate:
+    if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref, 'release/branch--') }}
+    uses: ./.github/workflows/token-generate.yml
+    with:
+      profile: 'deployer'
+    secrets:
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+    needs: token-generate
+    uses: ./.github/workflows/validate-workflow.yml
+    with:
+      workflow_file: 'merge-commit.yml'
+      schema: 'container.dotnet.merge-commit.schema.yml'
+      centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+    secrets:
+      GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  merge:
+    needs: [init, token-generate]
+    name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+          token: ${{ needs.token-generate.outputs.token }}
+          gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: ${{ inputs.dotnet-root }}/global.json
+
+      - name: Restore packages
+        working-directory: ${{ inputs.dotnet-root }}
+        run: dotnet restore "${{ inputs.solution-file }}" --configfile "${{ inputs.nuget-config }}"
+
+      - name: Build
+        working-directory: ${{ inputs.dotnet-root }}
+        run: dotnet build "${{ inputs.solution-file }}" --configuration "${{ inputs.configuration }}" --no-restore
+
+      - name: Test
+        working-directory: ${{ inputs.dotnet-root }}
+        run: dotnet test "${{ inputs.solution-file }}" --configuration "${{ inputs.configuration }}" --no-build
+
+      - name: Read project metadata
+        id: project
+        shell: bash
+        working-directory: ${{ inputs.dotnet-root }}
+        run: |
+          dotnet msbuild "${{ inputs.project-file }}" -getProperty:ContainerRepository,Version -nologo > project-metadata.json
+          echo "image=$(jq -r '.Properties.ContainerRepository' project-metadata.json)" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r '.Properties.Version' project-metadata.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and publish image
+        uses: mapfre-tech/action-azure/acr-push@v2
+        with:
+          acr-token-user: ${{ secrets.ACR_TOKEN_USER }}
+          acr-token-pass: ${{ secrets.ACR_TOKEN_PW }}
+          image: ${{ steps.project.outputs.image }}
+          acr-folder: ${{ inputs.acr-folder }}
+          dockerfile-path: ${{ inputs.dockerfile-path }}
+          context: ${{ inputs.docker-context }}
+          tag: ${{ fromJson(env.IS_RELEASE) && steps.project.outputs.version || format('{0}.{1}', steps.project.outputs.version, github.run_number) }}
+
+      - name: Tag Git repository
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-git/tag-push@v1
+        with:
+          tag: ${{ steps.project.outputs.version }}
+          message: "New version tag ${{ steps.project.outputs.version }}"
+
+    outputs:
+      published-version: ${{ fromJson(env.IS_RELEASE) && steps.project.outputs.version || format('{0}.{1}', steps.project.outputs.version, github.run_number) }}
+
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [token-generate, merge]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}

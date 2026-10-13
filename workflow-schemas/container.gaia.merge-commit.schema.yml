@@ -1,0 +1,104 @@
+type: map
+mapping:
+  name:
+    type: str
+    required: true
+  run-name:
+    type: str
+    required: true
+  on:
+    type: map
+    mapping:
+      pull_request:
+        type: map
+        mapping:
+          types:
+            type: seq
+            sequence:
+              - type: str
+          branches:
+            type: seq
+            sequence:
+              - type: str
+  jobs:
+    type: map
+    mapping:
+      merge:
+        type: map
+        mapping:
+          name:
+            type: str
+            required: true
+          uses:
+            type: str
+            required: true
+          with:
+            type: map
+            mapping:
+              acr-folder:
+                type: str
+                required: true
+              java-version:
+                type: str
+                required: false
+              java-extra-args:
+                type: str
+                required: false
+              jdk-distribution:
+                type: str
+                required: false
+              maven-version:
+                type: str
+                required: false
+              cache-enabled:
+                type: bool
+                required: false
+              next-snapshot-create-pull-request:
+                type: bool
+                required: false
+              source-folder:
+                type: str
+                required: false
+              docker-context:
+                type: str
+                required: false
+              component-name:
+                type: str
+                required: false
+              skip-tests:
+                type: bool
+                required: false
+              clean-publish:
+                type: bool
+                required: false
+              is-fix:
+                type: bool
+                required: false
+              prebuilt-artifact-name:
+                type: str
+                required: false
+              prebuilt-artifact-path:
+                type: str
+                required: false
+
+          secrets:
+            type: map
+            mapping:
+              AZURE_ARTIFACTS_USER:
+                type: str
+                required: true
+              AZURE_ARTIFACTS_PW:
+                type: str
+                required: true
+              ACR_TOKEN_USER:
+                type: str
+                required: true
+              ACR_TOKEN_PW:
+                type: str
+                required: true
+              RAM_GITHUB_GIT_TOKEN:
+                type: str
+                required: false
+              GH_TOKEN_ENCRYPTION_PASSPHRASE:
+                type: str
+                required: false

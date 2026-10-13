@@ -1,0 +1,326 @@
+name: Merge Commit
+run-name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact #${{ github.run_number }}"
+
+on:
+  workflow_call:
+    inputs:
+      python_version:
+        description: "Python version"
+        required: false
+        type: string
+        default: "3.11"
+      poetry_version:
+        description: "Poetry version"
+        required: false
+        type: string
+        default: "2.1.1"
+    secrets:
+      AZURE_ARTIFACTS_USER:
+        description: "User Azure Artifacts to install dependencies and publish package"
+        required: true
+      AZURE_ARTIFACTS_PW:
+        description: "Password Azure Artifacts to install dependencies and publish package"
+        required: true
+      APP_SEMANTIC_RELEASE_ID:
+        description: "User Semantic Release App"
+        required: true
+      APP_SEMANTIC_RELEASE_PRIVATE_KEY:
+        description: "Password Semantic Release App"
+        required: true
+      RAM_GITHUB_GIT_TOKEN:
+        description: "GitHub Token for creating Pull Requests, Commits and Merges"
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+env:
+  # Python environment configuration
+  PYTHON_VERSION: ${{ github.event.inputs.python_version || vars.PYTHON_VERSION || '3.11' }}
+  POETRY_VERSION: ${{ github.event.inputs.poetry_version || vars.POETRY_VERSION || '2.1.1' }}
+
+jobs:
+
+  # Generate centralized tokens if needed
+  token-generate:
+   #https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#running-your-pull_request_target-workflow-when-a-pull-request-merges
+   if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }} 
+   uses: ./.github/workflows/token-generate.yml  
+   with:
+      profile: 'deployer'
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+     needs: token-generate
+     uses: ./.github/workflows/validate-workflow.yml
+     with:
+        workflow_file: 'merge-commit.yml'
+        schema: 'lib.arch.django.merge-commit.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  merge-commit:
+    name: "Prepare ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact"
+    if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }}
+    needs: [ init, token-generate ]
+    runs-on: ubuntu-latest
+    outputs:
+      current_version: ${{ steps.read-version.outputs.value }}
+      release_created: "${{ steps.release.outputs.release_created || 'false'  }}"
+      is_release: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+      is_snapshot: ${{ fromJson(github.base_ref == 'develop') }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # read name from pyproject.toml
+      - name: Read Name
+        id: read-name
+        uses: SebRollen/toml-action@v1.2.0
+        with:
+          file: "pyproject.toml"
+          field: "project.name"
+
+      # Read version from pyproject.toml
+      - name: Read Version
+        id: read-version
+        uses: SebRollen/toml-action@v1.2.0
+        with:
+          file: "pyproject.toml"
+          field: "project.version"
+
+      # Generate GitHub Token From Semantic Release
+      - name: "Generate token (for Release Please)"
+        id: generate_token
+        if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_SEMANTIC_RELEASE_ID }}
+          private_key: ${{ secrets.APP_SEMANTIC_RELEASE_PRIVATE_KEY }}
+
+      # Run Google Release Please action:
+      - uses: googleapis/release-please-action@v4
+        name: Release Please
+        id: release
+        if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          target-branch: ${{ github.base_ref || github.ref_name  }}
+          release-type: python
+
+      # TODO: No repetir commits( excluir merge commits) en el changelog
+      # TODO: Renombrar rama release-please por release/branch--<version>
+
+  do-release-snapshot:
+    needs: [init, merge-commit, token-generate]
+    if: ${{ fromJson(needs.merge-commit.outputs.is_snapshot) || fromJSON(needs.merge-commit.outputs.release_created) }}
+    name: "Generate ${{ fromJson(needs.merge-commit.outputs.is_release) && 'Release' || 'Snapshot' }} Artifact"
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Setup Poetry ${{ env.POETRY_VERSION }}
+        run: |
+          pip install poetry==${{ env.POETRY_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          poetry config http-basic.azure ${{ secrets.AZURE_ARTIFACTS_USER }} ${{ secrets.AZURE_ARTIFACTS_PW }}
+          poetry install
+
+      - name: "Configure Poetry repository"
+        run: |
+          FEED_NAME="snapshots"
+          # [ "${{ needs.merge-commit.outputs.is_release }}" = "true" ] && FEED_NAME="releases"
+          poetry config repositories.azure "https://pkgs.dev.azure.com/devopsmapfre/devopsmapfre/_packaging/$FEED_NAME/pypi/upload/"
+          poetry config http-basic.azure ${{ secrets.AZURE_ARTIFACTS_USER }} ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      # Publish package in azure
+      - name: "Publish package in Poetry repository"
+        run: |
+          poetry publish --build --repository azure
+
+  to-next-version:
+    needs:
+      - init
+      - merge-commit
+      - do-release-snapshot
+      - token-generate
+    if: ${{ fromJson(needs.merge-commit.outputs.is_snapshot) || fromJSON(needs.merge-commit.outputs.release_created) }}
+    name: "Promotion Next ${{ fromJson(needs.merge-commit.outputs.is_release) && 'Release' || 'Snapshot' }} Artifact"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Setup Poetry ${{ env.POETRY_VERSION }}
+        run: |
+          pip install poetry==${{ env.POETRY_VERSION }}
+
+      # Step to increase development version if it is a snapshot
+      - name: Set Next Development Version
+        id: next-dev-version
+        if: ${{ fromJson(needs.merge-commit.outputs.is_snapshot) }}
+        run: |
+          current="${{ needs.merge-commit.outputs.current_version }}"
+          next="${current%-dev*}-dev$(( ${current##*-dev} + 1 ))"
+          echo "value=$(poetry version "$next" --short)" >> "$GITHUB_OUTPUT"
+
+      # Step to increment minor version and set dev0 if release was created
+      - name: Set Next Release Version
+        id: next-release-version
+        if: ${{ fromJson(needs.merge-commit.outputs.is_release) && fromJson(needs.merge-commit.outputs.release_created) }}
+        run: |
+          next="$(poetry version patch --short)-dev0"
+          echo "value=$(poetry version "$next" --short)" >> "$GITHUB_OUTPUT"
+
+      ################################################
+      # Update Readme Coverage Badge and Push Commit #
+      ################################################
+
+      # Install project with test dependencies      
+      - name: Install dependencies
+        # if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        run: |
+          poetry config http-basic.azure ${{ secrets.AZURE_ARTIFACTS_USER }} ${{ secrets.AZURE_ARTIFACTS_PW }}
+          poetry install
+
+      # Run tests from root to generate relative paths in coverage report
+      - name: Run Tests
+        # if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        run: |
+          poetry run pytest --cov-report=xml:coverage.xml
+
+      # Update README badge based on coverage percentage
+      - name: Update Coverage Badge in README
+        id: update-coverage-badge
+        # if: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Extract line-rate from coverage.xml
+          pct=$(python - <<'PY'
+          import xml.etree.ElementTree as ET
+          rate = ET.parse('coverage.xml').getroot().attrib.get('line-rate', '0')
+          print(f'{float(rate)*100:.0f}')
+          PY)
+          export PCT="$pct"
+
+          # Decide color based on thresholds
+          if (( PCT >= 90 )); then COLOR="brightgreen";
+          elif (( PCT >= 75 )); then COLOR="green";
+          elif (( PCT >= 60 )); then COLOR="yellow";
+          else COLOR="orange"; fi
+
+          # Escape percent for URL
+          url_pct="${PCT}%25"
+          badge="![coverage](https://img.shields.io/badge/coverage-${url_pct}-${COLOR})"
+
+          # Replace content between markers in README (supports inline and multiline markers)
+          awk -v badge="$badge" '
+            	# 1) Inline replacement when START and END are on the same line
+              /<!-- COVERAGE-BADGE:START -->/ && /<!-- COVERAGE-BADGE:END -->/ {
+                sub(/<!-- COVERAGE-BADGE:START -->.*<!-- COVERAGE-BADGE:END -->/, "<!-- COVERAGE-BADGE:START --> " badge " <!-- COVERAGE-BADGE:END -->");
+                print; next
+              }
+
+              # 2) Fallback: multiline markers (START and END in líneas diferentes)
+              BEGIN { inblk=0; }
+              /<!-- COVERAGE-BADGE:START -->/ { inblk=1; print; print badge; next }
+              /<!-- COVERAGE-BADGE:END -->/ { inblk=0; print; next }
+              { if (!inblk) print }
+          ' README.md > README.md.tmp && mv README.md.tmp README.md
+          
+          echo "value=${PCT}" >> "$GITHUB_OUTPUT"
+      
+      ####################################################
+      # End Update Readme Coverage Badge and Push Commit #
+      ####################################################
+      
+      - name: Sync docs content
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/content
+          cp -f CHANGELOG.md docs/content/CHANGELOG.md
+          cp -f README.md docs/content/index.md
+
+      # Push commit with new version
+      - name: Promotion to ${{ steps.next-dev-version.outputs.value || steps.next-release-version.outputs.value }} version (Push Commit)
+        uses: mapfre-tech/action-git/commit-push@v1
+        with:
+          filename: pyproject.toml README.md docs/content/CHANGELOG.md docs/content/index.md
+          message: "chore: promotion to next version (${{ steps.next-dev-version.outputs.value || steps.next-release-version.outputs.value }})"
+          branch: ${{github.base_ref}}
+          github-token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+      - name: git-configure
+        shell: bash
+        run: |
+          : git-configure
+          git config --local user.name mapfre-github-actions[bot]
+          git config --local user.email mapfre-github-actions[bot]@users.noreply.github.com
+
+      # Push commit with new version
+      - name: Merge main/master into develop (Automerge)
+        if: ${{ fromJson(needs.merge-commit.outputs.is_release) && fromJson(needs.merge-commit.outputs.release_created) }}
+        run: |
+          git fetch origin
+          git checkout develop
+          git merge --no-ff origin/${{ github.base_ref }} --no-edit
+          git push origin develop
+        env:
+          GITHUB_TOKEN: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}   
+
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ token-generate, to-next-version ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}

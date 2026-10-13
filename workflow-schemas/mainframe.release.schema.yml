@@ -1,0 +1,94 @@
+type: map
+mapping:
+  name:
+    type: str
+    required: true
+  run-name:
+    type: str
+    required: true
+  on:
+    type: map
+    mapping:
+      push:
+        type: map
+        mapping:
+          types:
+            type: seq
+            sequence:
+              - type: str
+          tags:
+            type: seq
+            sequence:
+              - type: str              
+  jobs:
+    type: map
+    mapping:
+      build-release:
+        type: map
+        mapping:
+          name:
+            type: str
+            required: false
+          uses:
+            type: str
+            required: true
+          with:
+            type: map
+            mapping:
+              tag-version:
+                type: str
+                required: true
+              runs-on-push-tag:
+                type: str
+                required: false
+              rse_user:
+                type: str
+                required: true                    
+              application:
+                type: str
+                required: true
+              branch:
+                type: str
+                required: true
+              run_number:
+                type: str
+                required: true
+              run_attempt:
+                type: str
+                required: true
+              forceFullBuildScanOnly:
+                type: bool
+                required: false
+              manifest-file:
+                type: str
+                required: false
+              source-folder:
+                type: str
+                required: false
+              maintainer:
+                type: str
+                required: false
+          secrets:
+            type: map
+            mapping:
+              AZURE_ARTIFACTS_USER:
+                type: str
+                required: false
+              AZURE_ARTIFACTS_PW:
+                type: str
+                required: false
+              RAM_GITHUB_GIT_TOKEN:
+                type: str
+                required: false
+              GH_TOKEN_ENCRYPTION_PASSPHRASE:
+                type: str
+                required: false
+              APP_GHZOS_PW:
+                type: str
+                required: true
+              ACR_TOKEN_USER:
+                type: str
+                required: true
+              ACR_TOKEN_PW:
+                type: str
+                required: true

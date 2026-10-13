@@ -1,0 +1,205 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Merge Commit Workflow. Triggers when:
+#   - A pull request to develop is closed and merged
+#   - A pull request to main is closed and merged
+#
+# Required secrets:
+#   - AZURE_ARTIFACTS_USER    (Organization)
+#   - AZURE_ARTIFACTS_PW      (Organization)
+#   - RAM_GITHUB_GIT_TOKEN    (Repository)
+
+name: Merge Commit
+run-name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact #${{ github.run_number }}"
+
+on:   
+  workflow_call:
+    inputs:
+      manifest-file:
+        description: 'Manifest file'
+        required: false
+        type: string
+        default: 'project-manifest.json'
+      next-snapshot-create-pull-request:
+        description: 'Create Pull Request to develop'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      AZURE_ARTIFACTS_USER: 
+        description: 'User Azure Artifacts' 
+        required: true
+      AZURE_ARTIFACTS_PW: 
+        description: 'Password Azure Artifacts'
+        required: true
+      RAM_GITHUB_GIT_TOKEN: 
+        description: 'GitHub Token for creating Pull Request to develop'
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+
+env:
+  # Merge to main/master (base_ref)
+  IS_RELEASE: ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') }}  
+
+jobs:
+
+  # Generate centralized tokens if needed
+  token-generate:
+   #https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#running-your-pull_request_target-workflow-when-a-pull-request-merges
+   if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }} 
+   uses: ./.github/workflows/token-generate.yml  
+   with:
+      profile: 'deployer'
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+     needs: token-generate
+     uses: ./.github/workflows/validate-workflow.yml
+     with:
+        workflow_file: 'merge-commit.yml'
+        schema: 'files.merge-commit.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+          
+  merge:   
+    needs: [ init, token-generate ]
+    name: "Generate ${{ fromJson(github.base_ref == 'main' || github.base_ref == 'master') && 'Release' || 'Snapshot' }} Artifact"
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Decrypt token
+        if: needs.token-generate.outputs.centralized-tokens == 'true'
+        id: decrypt
+        uses: mapfre-tech/action-ci-token/decrypt@v1
+        with:
+            token: ${{ needs.token-generate.outputs.token }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+          lfs: true
+          
+      - name: Read Name
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        id: read-name
+        with:
+            file: ${{ inputs.manifest-file }}
+            attribute: name            
+   
+      - name: Read Version
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        id: read-version
+        with:
+            file: ${{ inputs.manifest-file }}
+            attribute: version
+      
+      - name: Read Description
+        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        id: read-description
+        with:
+            file: ${{ inputs.manifest-file }}
+            attribute: description
+                 
+          # Prepare release -> set version.txt release version
+      - name: Prepare release
+        id: next-release-version
+        if: ${{ fromJson(env.IS_RELEASE) }}
+        run: |
+          nextVersion=$(echo ${{ steps.read-version.outputs.value }} | cut -d'-' -f1)          
+          jq '.version = "$nextVersion"' ${{ inputs.manifest-file }} > temp.json && mv temp.json ${{ inputs.manifest-file }}
+          echo "nextVersion=$nextVersion" >> $GITHUB_OUTPUT
+              
+        # Package artifact: zip . 
+      - name: Package Artifact
+        id: package-artifact
+        uses: mapfre-tech/action-fileutils/zip@v1
+        with:          
+          output-path: publish_artifact
+          exclude: '.git/\* .gitignore'
+      
+      # Determine Snapshot version based on current version + suffix (Run Number)
+      - name: Snapshot version
+        id: get-snapshot-version
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        run: |
+          echo "version=${{ steps.read-version.outputs.value }}-${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+        
+      # Publish Snapshot artifact
+      - name: Publish Snapshot Artifact
+        if: ${{ !fromJson(env.IS_RELEASE) }}
+        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+        with:
+          feed: snapshots
+          packageName: ${{ steps.read-name.outputs.value }}
+          version: ${{ steps.get-snapshot-version.outputs.version }}
+          path: publish_artifact
+          description: "${{ steps.read-name.outputs.value }} ${{ steps.get-snapshot-version.outputs.version }} snapshot ${{ steps.read-description.outputs.value }}"
+          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+  
+  
+      # Publish Release artifact
+      - name: Publish Release Artifact
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+        with:
+          feed: releases
+          packageName:  ${{ steps.read-name.outputs.value }}
+          version:  ${{ steps.next-release-version.outputs.nextVersion }}
+          path: publish_artifact
+          description: "${{ steps.read-name.outputs.value }} ${{ steps.npm-next-release-version.outputs.nextVersion }} release ${{ steps.read-description.outputs.value }}"
+          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+  
+            
+      # Git tag and push
+      - name: Tag Git Repository
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-git/tag-push@v1
+        with:
+          tag: ${{ steps.next-release-version.outputs.nextVersion }}
+          message: "${{ steps.read-name.outputs.value }} ${{ steps.npm-next-release-version.outputs.nextVersion }}"
+  
+      # Prepare next iteration
+      - name: Next Snapshot (Set next version in ${{ inputs.manifest-file }})
+        id: next-snapshot
+        if: fromJson(env.IS_RELEASE)
+        run: |
+          next_version=${{ steps.next-release-version.outputs.nextVersion }}
+          IFS="." read major minor patch <<< "$next_version"
+          patch=$((patch + 1))
+          new_version="${major}.${minor}.${patch}-snapshot.1"
+          jq --arg new_version "$new_version" '.version = $new_version' ${{ inputs.manifest-file }} > temp.json && mv temp.json ${{ inputs.manifest-file }}
+          echo "nextVersion=$new_version" >> $GITHUB_OUTPUT
+
+      # Commit package.json
+      - name: Next Snapshot (Git Commit & Push ${{ inputs.manifest-file }})
+        if: fromJson(env.IS_RELEASE)
+        uses: mapfre-tech/action-git/commit-push@v1
+        with:
+          filename: ${{ inputs.manifest-file }}
+          message: promotion to next development version (${{ steps.next-snapshot.outputs.nextVersion }}) completed
+          branch: ${{github.base_ref}}
+          create-pull-request: ${{ inputs.next-snapshot-create-pull-request }}  
+          pull-request-title: Next development version (${{ steps.next-snapshot.outputs.nextVersion }})
+          github-token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+
+    outputs:
+      published-version: ${{ steps.get-snapshot-version.outputs.version }}
+
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ token-generate, merge ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}

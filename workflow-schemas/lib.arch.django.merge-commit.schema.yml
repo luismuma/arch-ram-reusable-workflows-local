@@ -1,0 +1,60 @@
+type: map
+mapping:
+  name:
+    type: str
+    required: true
+  run-name:
+    type: str
+    required: true
+  on:
+    type: map
+    mapping:
+      pull_request:
+        type: map
+        mapping:
+          types:
+            type: seq
+            sequence:
+              - type: str
+          branches:
+            type: seq
+            sequence:
+              - type: str
+  jobs:
+    type: map
+    mapping:
+      merge:
+        type: map
+        mapping:
+          uses:
+            type: str
+          with:
+            type: map
+            mapping:
+              python_version:
+                type: str
+                required: false
+              poetry_version:
+                type: str
+                required: false
+          secrets:
+            type: map
+            mapping:
+              RAM_GITHUB_GIT_TOKEN:
+                type: str
+                required: false
+              GH_TOKEN_ENCRYPTION_PASSPHRASE:
+                type: str
+                required: false
+              AZURE_ARTIFACTS_USER:
+                type: str
+                required: true
+              AZURE_ARTIFACTS_PW:
+                type: str
+                required: true
+              APP_SEMANTIC_RELEASE_ID:
+                type: str
+                required: true
+              APP_SEMANTIC_RELEASE_PRIVATE_KEY:
+                type: str
+                required: true

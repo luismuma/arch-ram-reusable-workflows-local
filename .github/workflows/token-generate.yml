@@ -1,0 +1,85 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Generate GitHub Tokens.
+#   Reusable workflow that generates GitHub tokens.
+#   Triggered by other workflows in this repository.
+on:
+  workflow_call:
+    inputs:     
+      profile:
+        description: "Profile to use for token: reader, deployer"
+        required: false
+        type: string
+        default: 'reader'
+      platform-repo:
+        description: "Platform repository (comma-separated list)"
+        required: false
+        type: string
+        default: 'arch-ram-reusable-workflows'
+      repositories:
+        description: "Comma-separated list of repositories that the token should have access to"
+        required: false
+        type: string
+        default: ${{ github.repository }}
+    secrets:
+      EXTERNAL_GITHUB_TOKEN:
+        description: "External GitHub Token"
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: "Passphrase for decrypting the GitHub token"
+        required: false
+    outputs:
+      centralized-tokens:
+        description: "Indicates if centralized tokens are being used (true/false)"
+        value: ${{ jobs.init.outputs.centralized-tokens }}
+      token:
+        description: "Token value"
+        value: ${{ jobs.get-token.outputs.token || '' }}
+      platform-token:
+        description: "Platform token value"
+        value: ${{ jobs.get-token.outputs.platform-token || '' }}
+
+jobs:
+  init:  
+    name: Check GitHub Token
+    runs-on: ubuntu-latest  
+    outputs:  
+      centralized-tokens:  ${{ steps.eval.outputs.centralized-tokens }}
+    steps:
+
+      # If EXTERNAL_TOKEN provided, no centralized-token will be generated
+      - name: Eval
+        id: eval
+        env:         
+          EXTERNAL_GITHUB_TOKEN: ${{ secrets.EXTERNAL_GITHUB_TOKEN }}
+          GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+        run: |
+            if [ -n "$EXTERNAL_GITHUB_TOKEN" ]; then              
+              echo "centralized-tokens=false" >> $GITHUB_OUTPUT
+              echo "::notice::External GitHub token provided, skipping centralized token generation"
+            elif [ -n "$GH_TOKEN_ENCRYPTION_PASSPHRASE" ]; then              
+              echo "centralized-tokens=true" >> $GITHUB_OUTPUT              
+              echo "::notice::No external GitHub token provided, generating centralized tokens using the provided passphrase (GH_TOKEN_ENCRYPTION_PASSPHRASE)"
+            else
+              echo "::error::Invalid token configuration. If centralized tokens are enabled, provide GH_TOKEN_ENCRYPTION_PASSPHRASE as a global/org secret. If centralized tokens are not used, ensure EXTERNAL_GITHUB_TOKEN is correctly passed by the caller workflow (for example GH_GIT_TOKEN or RAM_GITHUB_GIT_TOKEN)."
+              exit 1
+            fi
+
+  get-token:
+    name: Generate centralized GitHub Tokens
+    needs: init
+    if: needs.init.outputs.centralized-tokens == 'true' 
+    uses: mapfre-tech/action-ci-token/.github/workflows/get-token.yml@v1
+    with:
+      profile: ${{ inputs.profile }}
+      include-platform-repos: true
+      platform-repo: ${{ inputs.platform-repo }}
+      repositories: ${{ inputs.repositories }}
+    secrets:
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+  
+     
+     
+     
+     
+     

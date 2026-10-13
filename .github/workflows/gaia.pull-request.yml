@@ -1,0 +1,195 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Pull Request Workflow. Triggers when:
+#   - A pull request from feature to develop is created / synchronized
+#   - A pull request from hotfix to main is created / synchronized
+#
+# Required secrets:
+#   - AZURE_ARTIFACTS_USER    (Organization)
+#   - AZURE_ARTIFACTS_PW      (Organization)
+#   - SONAR_TOKEN             (Repository)
+#   - SONAR_ROOT_CERT         (Repository)
+#   - GH_GIT_TOKEN            (Repository)
+
+name: PR workflow
+run-name: "Build and Test #${{ github.run_number }}: ${{ github.event.pull_request.title }}"
+
+on:  
+  workflow_call:
+    inputs:
+      sonar-project-key: 
+        description: 'Sonar Project Key'
+        required: false
+        type: string
+        default: ''
+      sonar-project-name:
+        description: 'Sonar Project Name'
+        required: false
+        type: string
+        default: ''
+      sonar-project-version:
+        description: 'Sonar Project Version'
+        required: false
+        type: string
+        default: ''
+      sonar-host-url:
+        description: 'Sonar Host URL'
+        required: false
+        type: string
+        default: 'https://codereview.azure.mapfre.com'
+      sonar-continue-on-error:
+        description: 'Sonar Continue on Error'
+        required: false
+        type: boolean
+        default: false
+      java-version:
+        description: 'Java Version'
+        required: false
+        type: string
+        default: '8.0.412+8'
+      java-extra-args:
+        description: 'Java Extra Args'
+        required: false
+        type: string
+        default: '-Dsource.skip -DskipTests -Dcobertura.skip'
+      jdk-distribution:
+        description: 'JDK Distribution'
+        required: false
+        type: string
+        default: 'temurin'
+      maven-version:
+        description: 'Maven Version'
+        required: false
+        type: string
+        default: '3.9.6'
+      cache-enabled:
+        description: 'Cache Enabled'
+        required: false
+        type: boolean
+        default: true
+      source-folder:
+        description: 'Source Folder'
+        required: false
+        type: string
+        default: '.'
+      skip-tests:
+        description: 'Skip Tests'
+        required: false
+        type: boolean
+        default: false
+
+    secrets:
+      AZURE_ARTIFACTS_USER:
+        description: 'User Azure Artifacts' 
+        required: true
+      AZURE_ARTIFACTS_PW:
+        description: 'Password Azure Artifacts' 
+        required: true
+      SONAR_TOKEN:
+        description: 'Sonar Token'
+        required: false
+      SONAR_ROOT_CERT:
+        description: 'Sonar Certificate'
+        required: false
+      GH_GIT_TOKEN:
+        description: 'GitHub Token for checking out the code'
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+
+env:
+  SONAR_CONFIGURED: ${{ fromJSON(inputs.sonar-project-key != '' && inputs.sonar-project-name != '') }}
+  JAVA_VERSION_SONAR_NO_COMPATIBLE: ${{ fromJSON(startsWith(inputs.java-version, '8') || startsWith(inputs.java-version, '9') || startsWith(inputs.java-version, '10') || startsWith(inputs.java-version, '11')) }}
+jobs:
+
+  # Generate centralized tokens if needed
+  token-generate:
+   if: ( contains(github.event.pull_request.head.ref, 'feature/') || contains(github.event.pull_request.head.ref, 'hotfix/') )
+   uses: ./.github/workflows/token-generate.yml 
+   with:
+      profile: 'reader'
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+     needs: token-generate
+     uses: ./.github/workflows/validate-workflow.yml
+     with:
+        workflow_file: 'pull-request.yml'
+        schema: 'gaia.pull-request.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.GH_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ init, token-generate ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  pull-request:
+    name: Build and Test
+    needs: init
+    runs-on: ubuntu-latest
+    outputs:
+      sonar-project-configured: ${{ inputs.sonar-project-key != '' && inputs.sonar-project-name != '' }}
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Java/Maven
+        uses: mapfre-tech/action-java-maven/setup@v1
+        with:
+          java-version: ${{ inputs.java-version }}
+          jdk-distribution: ${{ inputs.jdk-distribution }}
+          maven-version: ${{ inputs.maven-version }}
+          cache-enabled: ${{ inputs.cache-enabled }}
+
+      - name: Build
+        uses: mapfre-tech/action-java-maven/install@v1
+        with:          
+          workspace: ${{ inputs.source-folder }}
+          extra-args: ${{ inputs.java-extra-args }} 
+          azure-artifact-user: ${{ secrets.AZURE_ARTIFACTS_USER }}
+          azure-artifact-pw: ${{ secrets.AZURE_ARTIFACTS_PW }}
+  
+      - name: Unit Test
+        if: ${{ !inputs.skip-tests }}
+        uses: mapfre-tech/action-java-maven/junit@v1
+        with:
+          workspace: ${{ inputs.source-folder }}
+          azure-artifact-user: ${{ secrets.AZURE_ARTIFACTS_USER }}
+          azure-artifact-pw: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      
+      - name: Setup Java 17
+        if: ${{ fromJson(env.SONAR_CONFIGURED) }}
+        uses: mapfre-tech/action-java-maven/setup@v1
+        with:
+          java-version: '17'
+          jdk-distribution: ${{ inputs.jdk-distribution }}
+          maven-version: ${{ inputs.maven-version }}
+          cache-enabled: ${{ inputs.cache-enabled }}
+
+      - name: SonarQube Scanner - Maven
+        if: ${{ fromJson(env.SONAR_CONFIGURED) }}
+        continue-on-error: ${{ inputs.sonar-continue-on-error}}
+        uses: mapfre-tech/action-sonarqube/scanner-maven@v1
+        with:
+            hostURL: ${{ inputs.sonar-host-url }}
+            projectKey: ${{ inputs.sonar-project-key }}
+            projectName: ${{ inputs.sonar-project-name }}
+            projectBaseDir: '${{ inputs.source-folder }}'
+            authToken: ${{ secrets.SONAR_TOKEN }}
+            checkQualityGate: 'true'
+            azure-artifact-user: ${{ secrets.AZURE_ARTIFACTS_USER }}
+            azure-artifact-pw: ${{ secrets.AZURE_ARTIFACTS_PW }}
+            scanMetadataReportFile: 'target/sonar/report-task.txt'
+            rootCert: ${{ secrets.SONAR_ROOT_CERT }}

@@ -1,0 +1,168 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Pull Request Workflow for MCP servers (Python container, uv-based). Triggers when:
+#   - A pull request from feature to develop is created / synchronized
+#   - A pull request from hotfix to main is created / synchronized
+#
+# The generic container.python.pull-request.yml, called unchanged, behind the
+# MCP governance gate: the contract manifest must be exactly what the code generates
+# and carry no pending governance decision.
+# Nothing is built or tested until it passes.
+# Its check is temporarily disabled while the agent and MCP authorization model is
+# decided (see the validate-mcp-contract job).
+#
+# Inputs and secrets are the generic's, with its defaults, and the project's workflow
+# file is validated against the generic schema, container.python.pull-request.schema.yml.
+# A project calls this workflow exactly as it would call the generic one, with the generic
+# layout: pyproject.toml, the `app` package and its tests in source-folder, and
+# docker/Dockerfile built from the root.
+#
+# Required secrets:
+#   - ACR_TOKEN_USER          (Organization)
+#   - ACR_TOKEN_PW            (Organization)
+#   - AZURE_ARTIFACTS_USER    (Organization)
+#   - AZURE_ARTIFACTS_PW      (Organization)
+#   - SONAR_TOKEN             (Repository) Secret with the SonarQube token
+
+name: PR workflow (MCP)
+
+on:
+  workflow_call:
+    # The generic's inputs and secrets, verbatim. A reusable workflow cannot leave an input
+    # unset when it calls another, so the defaults are repeated here: keep them in sync with
+    # container.python.pull-request.yml.
+    inputs:
+      sonar-host-url:
+        description: 'Sonar Host URL'
+        required: false
+        type: string
+        default: ''
+      sonar-project-key:
+        description: 'Sonar Project Key'
+        required: false
+        type: string
+        default: ''
+      sonar-project-name:
+        description: 'Sonar Project Name'
+        required: false
+        type: string
+        default: ''
+      sonar-version:
+        description: 'Sonar Scanner CLI version'
+        required: false
+        type: string
+        default: '10.0'
+      sonar-params:
+        description: 'Sonar Scanner CLI params'
+        required: false
+        type: string
+        default: '-Dsonar.qualitygate.wait=false -Dsonar.sourceEncoding=UTF-8 -Dsonar.python.coverage.reportPaths=coverage.xml  -Dsonar.sources=docker,sources'
+      python-version:
+        description: 'Python version'
+        required: false
+        type: string
+        default: '3.12'
+      uv-version:
+        description: 'uv version'
+        required: false
+        type: string
+        default: '0.9.7'
+      source-folder:
+        description: 'Source Folder'
+        required: false
+        type: string
+        default: 'sources'
+      runs-on-sonar:
+        description: 'runs-on to use for Sonar job. Example: ["ubuntu-latest"], ["self-hosted", "mar", "dev"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+
+    secrets:
+      SONAR_TOKEN:
+        description: 'Sonar Token'
+        required: false
+      ACR_TOKEN_USER:
+        description: 'User ACR'
+        required: true
+      ACR_TOKEN_PW:
+        description: 'Password ACR'
+        required: true
+      GH_GIT_TOKEN:
+        description: 'GitHub Token for checking out the code'
+        required: false
+      AZURE_ARTIFACTS_USER:
+        description: 'User Azure Artifacts'
+        required: true
+      AZURE_ARTIFACTS_PW:
+        description: 'Password Azure Artifacts'
+        required: true
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+
+jobs:
+
+  # MCP-SPECIFIC: the governance contract gate. A manifest that drifted from the code, or
+  # one with a governance decision still pending, must not reach a build.
+  validate-mcp-contract:
+    # The generic pipeline only runs for feature/ and hotfix/ heads; so does its gate.
+    if: ( contains(github.event.pull_request.head.ref, 'feature/') || contains(github.event.pull_request.head.ref, 'hotfix/') )
+    name: Validate MCP Contract Manifest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Credentials for uv to resolve mapfre-agent-core from the Azure Artifacts index "azure".
+    env:
+      UV_INDEX_AZURE_USERNAME: ${{ secrets.AZURE_ARTIFACTS_USER }}
+      UV_INDEX_AZURE_PASSWORD: ${{ secrets.AZURE_ARTIFACTS_PW }}
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install uv ${{ inputs.uv-version }}
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ inputs.uv-version }}
+
+      - name: Set up Python ${{ inputs.python-version }}
+        run: uv python install ${{ inputs.python-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.source-folder }}
+        run: uv sync
+
+      # TEMPORARILY DISABLED: the contract manifest carries each tool's authorization decision
+      # (the app role it demands), and how agents and MCP servers authorize is still being
+      # decided. The job stays, so that `needs:` and any required status check keep working;
+      # uncomment the step to re-enable it.
+      # Regenerates the manifest from the code without writing it, and fails if it differs
+      # from the committed one or a governance decision is still TODO.
+      # - name: Validate contract manifest
+      #   working-directory: ${{ inputs.source-folder }}
+      #   run: uv run python scripts/contract_sync.py --check
+
+  # The generic Python pipeline, unchanged.
+  python:
+    name: Python
+    needs: validate-mcp-contract
+    uses: ./.github/workflows/container.python.pull-request.yml
+    with:
+      sonar-host-url: ${{ inputs.sonar-host-url }}
+      sonar-project-key: ${{ inputs.sonar-project-key }}
+      sonar-project-name: ${{ inputs.sonar-project-name }}
+      sonar-version: ${{ inputs.sonar-version }}
+      sonar-params: ${{ inputs.sonar-params }}
+      python-version: ${{ inputs.python-version }}
+      uv-version: ${{ inputs.uv-version }}
+      source-folder: ${{ inputs.source-folder }}
+      runs-on-sonar: ${{ inputs.runs-on-sonar }}
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      ACR_TOKEN_USER: ${{ secrets.ACR_TOKEN_USER }}
+      ACR_TOKEN_PW: ${{ secrets.ACR_TOKEN_PW }}
+      GH_GIT_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+      AZURE_ARTIFACTS_USER: ${{ secrets.AZURE_ARTIFACTS_USER }}
+      AZURE_ARTIFACTS_PW: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}

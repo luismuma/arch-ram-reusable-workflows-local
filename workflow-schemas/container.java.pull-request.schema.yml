@@ -1,0 +1,101 @@
+type: map
+mapping:
+  name:
+    type: str
+    required: true
+  run-name:
+    type: str
+    required: true
+  on:
+    type: map
+    mapping:
+      pull_request:
+        type: map
+        mapping:
+          types:
+            type: seq
+            sequence:
+              - type: str
+          branches:
+            type: seq
+            sequence:
+              - type: str
+  jobs:
+    type: map
+    mapping:      
+      pull-request:
+        type: map
+        mapping:
+          name:
+            type: str
+            required: true
+          needs:
+            type: any
+            required: false
+          uses:
+            type: str
+            required: true
+          with:
+            type: map
+            mapping:
+              sonar-project-key:
+                type: str
+                required: false
+              sonar-project-name:
+                type: str
+                required: false
+              sonar-host-url: 
+                type: str
+                required: false
+              java-version:
+                type: str
+                required: false
+              java-extra-args:
+                type: str
+                required: false
+              jdk-distribution:
+                type: str
+                required: false
+              maven-version:
+                type: str
+                required: false
+              cache-enabled:
+                type: bool
+                required: false
+              runs-on-sonar:
+                type: str
+                required: false
+              sonar-project-version:
+                type: str
+                required: false
+              source-folder:
+                type: str
+                required: false
+              
+          secrets:
+            type: map
+            mapping:
+              AZURE_ARTIFACTS_USER:
+                type: str
+                required: true
+              AZURE_ARTIFACTS_PW:
+                type: str
+                required: true             
+              ACR_TOKEN_USER:
+                type: str
+                required: true
+              ACR_TOKEN_PW:
+                type: str
+                required: true
+              SONAR_TOKEN:
+                type: str
+                required: false
+              SONAR_ROOT_CERT:
+                type: str
+                required: false
+              GH_GIT_TOKEN:
+                type: str
+                required: false
+              GH_TOKEN_ENCRYPTION_PASSPHRASE:
+                type: str
+                required: false

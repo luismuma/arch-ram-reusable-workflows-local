@@ -1,0 +1,36 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Revoke GitHub Tokens.
+#   Reusable workflow that revokes GitHub tokens.
+#   Triggered by other workflows in this repository.
+on:
+  workflow_call:   
+    secrets:
+      TOKEN:
+        description: "Token to revoke"
+        required: false
+      PLATFORM_TOKEN:
+        description: "Platform token to revoke"
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: "Passphrase for decrypting the GitHub token"
+        required: false
+ 
+
+jobs:
+ 
+  revoke: 
+    name: Revoke GitHub Tokens
+    runs-on: ubuntu-latest     
+    steps:
+      - name: Revoke tokens     
+        uses: mapfre-tech/action-ci-token/revoke@v1
+        with:
+            token: ${{ secrets.TOKEN }}
+            platform-token: ${{ secrets.PLATFORM_TOKEN }}
+            gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+     
+     
+     
+     
+     

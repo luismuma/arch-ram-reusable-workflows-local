@@ -1,0 +1,126 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Merge Commit Workflow for AI agents (Python container, uv-based). Triggers when:
+#   - A pull request to develop is closed and merged
+#   - A pull request to main is closed and merged
+#
+# The generic container.python.merge-commit.yml, called unchanged, behind the
+# agent security gate: the agent must register the security middlewares of
+# mapfre-agent-core.
+# No image or artifact is published, and no release is cut, until it passes.
+# Its check is temporarily disabled while the agent authorization model is decided
+# (see the validate-agent-security job).
+#
+# Inputs and secrets are the generic's, with its defaults, and the project's workflow
+# file is validated against the generic schema, container.python.merge-commit.schema.yml.
+# A project calls this workflow exactly as it would call the generic one, with the generic
+# layout: pyproject.toml, the `app` package and its tests in source-folder, and
+# docker/Dockerfile built from the root.
+#
+# Required secrets:
+#   - AZURE_ARTIFACTS_USER    (Organization)
+#   - AZURE_ARTIFACTS_PW      (Organization)
+#   - ACR_TOKEN_USER          (Organization)
+#   - ACR_TOKEN_PW            (Organization)
+#   - RAM_GITHUB_GIT_TOKEN    (Repository)
+
+name: Merge Commit (Agent)
+
+on:
+  workflow_call:
+    # The generic's inputs and secrets, verbatim. A reusable workflow cannot leave an input
+    # unset when it calls another, so the defaults are repeated here: keep them in sync with
+    # container.python.merge-commit.yml.
+    inputs:
+      python-version:
+        description: 'Python version'
+        required: false
+        type: string
+        default: '3.12'
+      uv-version:
+        description: 'uv version'
+        required: false
+        type: string
+        default: '0.9.7'
+      acr-folder:
+        description: 'ACR Folder'
+        required: false
+        type: string
+        default: ''
+      source-folder:
+        description: 'Source Folder'
+        required: false
+        type: string
+        default: 'sources'
+      next-snapshot-create-pull-request:
+        description: 'Create Pull Request to develop'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      ACR_TOKEN_USER:
+        description: 'User ACR'
+        required: true
+      ACR_TOKEN_PW:
+        description: 'Password ACR'
+        required: true
+      RAM_GITHUB_GIT_TOKEN:
+        description: 'GitHub Token for creating Pull Request to develop'
+        required: false
+      AZURE_ARTIFACTS_USER:
+        description: 'User Azure Artifacts'
+        required: true
+      AZURE_ARTIFACTS_PW:
+        description: 'Password Azure Artifacts'
+        required: true
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+
+jobs:
+
+  # AGENT-SPECIFIC: agents must use the security middlewares from mapfre-agent-core.
+  # Removing them leaves the agent with no Entra authentication, and nothing else notices.
+  validate-agent-security:
+    # The generic pipeline only runs for merged PRs not headed by release/branch--;
+    # so does its gate.
+    if: ${{ github.event.pull_request.merged == true && !startsWith(github.head_ref , 'release/branch--') }}
+    name: Validate Agent Security Middlewares
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # TEMPORARILY DISABLED: how an agent authorizes its callers (one app registration per
+      # agent with Agent.Invoke, a shared app registration, or Entra Agent ID) is still being
+      # decided, and this step enforces today's EntraIDAuthMiddleware. The job stays, so that
+      # `needs:` and any required status check keep working; uncomment the step to re-enable it.
+      # - name: Validate mapfre-agent-core middleware usage
+      #   uses: mapfre-tech/action-validate-agent-middlewares@feature/add-middleware-validation
+      #   with:
+      #     source-folder: ${{ inputs.source-folder }}
+      #     # ModelComplianceMiddleware is gone since mapfre-agent-core 0.2.0: model compliance
+      #     # is governed in the LLM Gateway.
+      #     required-middlewares: 'EntraIDAuthMiddleware'
+
+  # The generic Python pipeline, unchanged.
+  python:
+    name: Python
+    needs: validate-agent-security
+    uses: ./.github/workflows/container.python.merge-commit.yml
+    with:
+      python-version: ${{ inputs.python-version }}
+      uv-version: ${{ inputs.uv-version }}
+      acr-folder: ${{ inputs.acr-folder }}
+      source-folder: ${{ inputs.source-folder }}
+      next-snapshot-create-pull-request: ${{ inputs.next-snapshot-create-pull-request }}
+    secrets:
+      ACR_TOKEN_USER: ${{ secrets.ACR_TOKEN_USER }}
+      ACR_TOKEN_PW: ${{ secrets.ACR_TOKEN_PW }}
+      RAM_GITHUB_GIT_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+      AZURE_ARTIFACTS_USER: ${{ secrets.AZURE_ARTIFACTS_USER }}
+      AZURE_ARTIFACTS_PW: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}

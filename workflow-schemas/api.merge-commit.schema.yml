@@ -1,0 +1,64 @@
+type: map
+mapping:
+  name:
+    type: str
+    required: true
+  run-name:
+    type: str
+    required: true
+  on:
+    type: map
+    mapping:
+      pull_request:
+        type: map
+        mapping:
+          types:
+            type: seq
+            sequence:
+              - type: str
+          branches:
+            type: seq
+            sequence:
+              - type: str
+  jobs:
+    type: map
+    mapping:
+      merge:
+        type: map
+        mapping:
+          uses:
+            type: str
+          with:
+            type: map
+            mapping:
+              manifest-file:
+                type: str
+                required: false              
+              next-snapshot-create-pull-request:
+                type: bool
+                required: false
+              marketplace-url:
+                type: str
+                required: false                
+
+          secrets:
+            type: map
+            mapping:
+              AZURE_ARTIFACTS_USER:
+                type: str
+                required: true
+              AZURE_ARTIFACTS_PW:
+                type: str
+                required: true
+              RAM_GITHUB_GIT_TOKEN:
+                type: str
+                required: false
+              GH_TOKEN_ENCRYPTION_PASSPHRASE:
+                type: str
+                required: false
+              OAUTH2_CLIENT_ID:
+                type: str
+                required: true
+              OAUTH2_CLIENT_SECRET:
+                type: str
+                required: true

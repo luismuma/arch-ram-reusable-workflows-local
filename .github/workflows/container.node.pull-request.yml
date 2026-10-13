@@ -1,0 +1,202 @@
+# Copyright (c) MAPFRE DevOps Platform
+#
+# Pull Request Workflow. Triggers when:
+#   - A pull request from feature to develop is created / synchronized
+#   - A pull request from hotfix to main is created / synchronized
+#
+# Required secrets:
+#   - AZURE_ARTIFACTS_USER    (Organization)
+#   - AZURE_ARTIFACTS_PW      (Organization)
+#   - SONAR_TOKEN             (Repository)
+
+name: PR workflow
+run-name: "Build and Test #${{ github.run_number }}: ${{ github.event.pull_request.title }}"
+
+on:  
+  workflow_call:
+    inputs:
+      sonar-project-key: 
+        description: 'Sonar Project Key'
+        required: false
+        type: string
+        default: ''
+      sonar-project-name:
+        description: 'Sonar Project Name'
+        required: false
+        type: string
+        default: ''
+      sonar-params:
+        description: 'Sonar scanner CLI params'
+        required: false
+        type: string
+        default: '-Dsonar.qualitygate.wait=false -Dsonar.sourceEncoding=UTF-8 -Dsonar.typescript.lcov.reportPaths=source/app/test/test-reports/coverage/lcov.info  -Dsonar.sources=docker,source'
+      node-version:
+        description: 'Node Version'
+        required: false
+        type: string
+        default: '22'
+      source-folder:
+        description: 'Source Folder'
+        required: false
+        type: string
+        default: 'source/app'
+      runs-on-sonar:
+        description: 'runs-on to use for Sonar job. Example: ["ubuntu-latest"], ["self-hosted", "mar", "dev"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+    secrets:
+      AZURE_ARTIFACTS_USER:
+        description: 'User Azure Artifacts' 
+        required: true
+      AZURE_ARTIFACTS_PW:
+        description: 'Password Azure Artifacts' 
+        required: true
+      SONAR_TOKEN:
+        description: 'Sonar Token'
+        required: false
+      ACR_TOKEN_USER: 
+        description: 'User ACR' 
+        required: true
+      ACR_TOKEN_PW:
+        description: 'Password ACR'
+        required: true
+      GH_GIT_TOKEN:
+        description: 'GitHub Token for checking out the code'
+        required: false
+      GH_TOKEN_ENCRYPTION_PASSPHRASE:
+        description: 'Passphrase for decrypting the GitHub token'
+        required: false
+  
+jobs:
+
+  # Generate centralized tokens if needed
+  token-generate:
+   if: ( contains(github.event.pull_request.head.ref, 'feature/') || contains(github.event.pull_request.head.ref, 'hotfix/') )
+   uses: ./.github/workflows/token-generate.yml 
+   with:
+      profile: 'reader'
+   secrets:
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  init:
+     needs: token-generate
+     uses: ./.github/workflows/validate-workflow.yml
+     with:
+        workflow_file: 'pull-request.yml'
+        schema: 'container.node.pull-request.schema.yml'
+        centralized-tokens: ${{ fromJson(needs.token-generate.outputs.centralized-tokens) }}
+     secrets:
+        GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.GH_GIT_TOKEN }}
+        GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  # Revoke tokens if they were generated in this workflow
+  revoke-tokens:
+    if: always() && needs.token-generate.outputs.centralized-tokens == 'true'
+    needs: [ init, token-generate ]
+    uses: ./.github/workflows/token-revoke.yml
+    secrets:
+      TOKEN: ${{ needs.token-generate.outputs.token }}
+      PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  pull-request:
+    name: Build and Test
+    needs: init
+    runs-on: ubuntu-latest
+    outputs:
+      sonar-project-configured: ${{ inputs.sonar-project-key != '' && inputs.sonar-project-name != '' }}    
+    steps:
+     
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+        
+        # Run 'npm ci' on .
+      - name: Install dependencies
+        uses: mapfre-tech/action-npm/ci@v1
+        with:
+          working_directory: ${{ inputs.source-folder }}
+          feed: 'releases'      
+          azure_npm_user: ${{ secrets.AZURE_ARTIFACTS_USER }}
+          azure_npm_secret: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      
+      - name: Build
+        uses: mapfre-tech/action-npm/build@v1
+        with:
+          working_directory: ${{ inputs.source-folder }}
+
+      - name: Test
+        uses: mapfre-tech/action-npm/test@v1
+        with:
+          working_directory: ${{ inputs.source-folder }}
+
+      - name: Lint
+        uses: mapfre-tech/action-npm/lint@v1
+        with:
+          working_directory: ${{ inputs.source-folder }}
+
+    # TODO: Login in acr
+    # TODO reemplazar con https://github.com/mapfre-tech/action-azure/pull/36
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: acrmapfredevops.azurecr.io
+          username: ${{ secrets.ACR_TOKEN_USER }}
+          password: ${{ secrets.ACR_TOKEN_PW }}  
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          tags: test
+
+      # Upload files generated at Build/Test phase and required for sonar scanner step
+      - name: "Upload Build/Test Generated Files"
+        uses: actions/upload-artifact@v7
+        with:
+          name: "required-sonar-scanner-generated-files"
+          # -Dsonar.typescript.lcov.reportPaths -> source/app/test/test-reports/* (Generated at test phase) -> Include
+          # -Dsonar.sources -> docker,source (Source code) -> Not necessary
+          path: |
+            ${{ inputs.source-folder }}/test/test-reports
+          retention-days: 1
+
+  # Code Quality/Sonar job
+  code-quality:
+    name: Code Quality
+    needs: pull-request
+    if: fromJSON(needs.pull-request.outputs.sonar-project-configured)
+    runs-on: ${{ fromJSON(inputs.runs-on-sonar) }}
+    container:
+      image: acrmapfredevops.azurecr.io/mapfre/global/sonar-scanner-cli:10.0
+      options: --user root
+      credentials:
+        username: ${{ secrets.ACR_TOKEN_USER}}
+        password: ${{ secrets.ACR_TOKEN_PW }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: "Download Build/Test Generated Files"
+        uses: actions/download-artifact@v6
+        with:
+          name: "required-sonar-scanner-generated-files"
+          path: ${{ inputs.source-folder }}/test/test-reports
+
+      - name: SonarQube Scanner - CLI
+        id: scanner-cli
+        uses: mapfre-tech/action-sonarqube/scanner-cli@v1
+        with:
+          projectKey: ${{ inputs.sonar-project-key }}
+          projectName: ${{ inputs.sonar-project-name }}
+          authToken: ${{ secrets.SONAR_TOKEN }}
+          checkQualityGate: 'true'
+          params: ${{ inputs.sonar-params }}
