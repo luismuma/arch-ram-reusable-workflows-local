@@ -5,9 +5,9 @@
 #   - A pull request from hotfix to main is created / synchronized
 #
 # Required secrets:
-#   - AZURE_ARTIFACTS_USER    (Organization)
-#   - AZURE_ARTIFACTS_PW      (Organization)
-#   - GH_GIT_TOKEN            (Repository)
+#   - AZURE_ARTIFACTS_USER     (Organization)
+#   - AZURE_ARTIFACTS_PW       (Organization)
+#   - GH_GIT_TOKEN             (Repository)
 
 
 name: PR workflow
@@ -127,12 +127,6 @@ jobs:
 
   
   # ============================================================================
-  # VALIDA EL ARCHIVO YAML/JSON CONTRA EL ESQUEMA YAML
-  # ============================================================================
-  #
-  # Valida cdc.pull-request.yml contra el esquema YAML usando pykwalify.
-  #
-  # ============================================================================
   # PREPARE: VALIDA EL JSON CONTRA EL ESQUEMA CORPORATIVO
   # ============================================================================
   prepare:
@@ -197,7 +191,6 @@ jobs:
             cdc-controller/config/inventory_connections/db_connections.yaml \
             cdc-controller/config/inventory_connections/target_connections.yaml
 
-          # Como los ficheros están en main, hacemos checkout de main (o de la rama origen donde estén)
           git checkout main
 
           echo "Rama de inventarios actual:"
@@ -206,10 +199,8 @@ jobs:
           echo "Ficheros seleccionados:"
           ls -l cdc-controller/config/inventory_connections/
 
-          # Crear la carpeta de destino en el workspace del workflow.
           mkdir -p "$GITHUB_WORKSPACE/inventory_connections"
 
-          # Copiar únicamente los dos ficheros seleccionados.
           cp cdc-controller/config/inventory_connections/db_connections.yaml \
              "$GITHUB_WORKSPACE/inventory_connections/"
 
@@ -232,15 +223,6 @@ jobs:
   # ============================================================================
   # VALIDA RUTAS, TEMPLATING Y ESTRUCTURA MEDIANTE SPECTRAL
   # ============================================================================
-  #
-  # Ejecuta las validaciones CDC únicamente si la validación de ramas ha
-  # terminado correctamente y la generación de tokens ha tenido éxito
-  # o no era necesaria.
-  #
-
-  # ---------------------------------------------------------
-  # 4. Validate only the CDC application template
-  # ---------------------------------------------------------
   pull-request:
     name: Validate CDC application template
     needs:
@@ -273,10 +255,6 @@ jobs:
   # ============================================================================
   # REVOCA LOS TOKENS CENTRALIZADOS
   # ============================================================================
-  #
-  # Se ejecuta siempre que corresponda revocar los tokens, incluso si falla
-  # la validación CDC.
-  #
   revoke-tokens:
     name: Revoke Centralized Tokens
     needs:
@@ -293,4 +271,3 @@ jobs:
       TOKEN: ${{ needs.token-generate.outputs.token }}
       PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
-
