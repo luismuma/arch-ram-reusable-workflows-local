@@ -50,7 +50,7 @@ jobs:
   #
   init:
     name: Validate GitHub Workflow
-    uses: luismuma/arch-ram-reusable-workflows-local/.github/workflows/validate.workflow.yml@main
+    uses: ./.github/workflows/validate.workflow.yml@main
 
     with:
       workflow_file: cdc.pull-request.yml
