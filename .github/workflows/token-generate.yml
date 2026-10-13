@@ -69,7 +69,7 @@ jobs:
     name: Generate centralized GitHub Tokens
     needs: init
     if: needs.init.outputs.centralized-tokens == 'true' 
-    uses: luismuma/action-ci-token/.github/workflows/get-token.yml@main
+    uses: luismuma/action-ci-token-local/.github/workflows/get-token.yml@main
     with:
       profile: ${{ inputs.profile }}
       include-platform-repos: true
