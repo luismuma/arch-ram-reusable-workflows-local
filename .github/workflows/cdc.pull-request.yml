@@ -176,8 +176,13 @@ jobs:
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
-  # NUEVO JOB: DESCARGA LOS FICHEROS DEL INVENTARIO CDC
-  # Se ejecuta después de pull-request y antes de revoke-tokens.
+  # JOB: DESCARGA LOS FICHEROS DEL INVENTARIO CDC
+  #
+  # MODIFICACIÓN:
+  # - Se elimina el diagnóstico que exigía obligatoriamente un token.
+  # - Se permite clonar el repositorio público sin autenticación.
+  # - Si existe EXTERNAL_GITHUB_TOKEN o GH_GIT_TOKEN, se utiliza autenticación.
+  # - Se mantienen la copia y la validación de los dos ficheros descargados.
   # ============================================================================
 
   load-cdc-inventory:
@@ -199,22 +204,14 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@v6
-      # 2. DIAGNÓSTICO: comprobar que el secreto llega al job
-      - name: Diagnose GitHub token availability
-        shell: bash
-        env:
-          GH_GIT_TOKEN: ${{ secrets.EXTERNAL_GITHUB_TOKEN || secrets.GH_GIT_TOKEN }}
-        run: |
-          set -euo pipefail
 
-          if [[ -n "${GH_GIT_TOKEN:-}" ]]; then
-            echo "Token recibido correctamente."
-          else
-            echo "::error::El workflow reutilizable no ha recibido el token."
-            exit 1
-          fi
       # ------------------------------------------------------------------------
-      # 2. Clona el repositorio de inventario CDC
+      # 2. Clona el repositorio público de inventario CDC.
+      #
+      # MODIFICADO:
+      # - Si hay token, clona con autenticación.
+      # - Si no hay token, intenta clonar sin autenticación.
+      # - Ya no falla únicamente porque los secretos estén vacíos.
       # ------------------------------------------------------------------------
 
       - name: Clone CDC inventory repository
@@ -224,23 +221,37 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ -z "${GH_GIT_TOKEN:-}" ]]; then
-            echo "::error::No está configurado EXTERNAL_GITHUB_TOKEN ni GH_GIT_TOKEN."
-            exit 1
-          fi
-
           REPO_DIR="$RUNNER_TEMP/ioeu-cdc-repo-piloto-cdc-local"
+          REPO_URL="https://github.com/luismuma/ioeu-cdc-repo-piloto-cdc-local.git"
 
-          git \
-            -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_GIT_TOKEN" | base64 -w 0)" \
-            clone \
-            --filter=blob:none \
-            --no-checkout \
-            https://github.com/luismuma/ioeu-cdc-repo-piloto-cdc-local.git \
-            "$REPO_DIR"
+          echo "================================================"
+          echo "DESCARGA DEL INVENTARIO CDC"
+          echo "================================================"
+
+          if [[ -n "${GH_GIT_TOKEN:-}" ]]; then
+            echo "Se utilizará autenticación mediante token."
+
+            git \
+              -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_GIT_TOKEN" | base64 -w 0)" \
+              clone \
+              --filter=blob:none \
+              --no-checkout \
+              "$REPO_URL" \
+              "$REPO_DIR"
+          else
+            echo "No hay token configurado."
+            echo "Se intentará descargar el repositorio público sin autenticación."
+
+            git clone \
+              --filter=blob:none \
+              --no-checkout \
+              "$REPO_URL" \
+              "$REPO_DIR"
+          fi
 
           cd "$REPO_DIR"
 
+          # Descarga selectiva de los dos ficheros necesarios.
           git sparse-checkout init --no-cone
 
           git sparse-checkout set --no-cone \
@@ -267,10 +278,14 @@ jobs:
             fi
 
             cp "$file" "$DEST_DIR/"
+            echo "Copiado: ${file##*/}"
           done
 
       # ------------------------------------------------------------------------
       # 4. Verifica los ficheros descargados
+      #
+      # Se mantiene la validación para evitar continuar con un inventario
+      # incompleto o con ficheros vacíos.
       # ------------------------------------------------------------------------
 
       - name: Verify CDC inventory files
@@ -295,7 +310,8 @@ jobs:
           done
 
           echo "Inventario CDC cargado correctamente."
-
+  
+  
   # ============================================================================
   # REVOCA LOS TOKENS CENTRALIZADOS
   # ============================================================================
