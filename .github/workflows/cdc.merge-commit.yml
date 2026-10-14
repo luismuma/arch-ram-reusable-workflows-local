@@ -107,10 +107,12 @@ jobs:
     name: Generate Centralized Tokens
     needs:
       - validate-merge-branches
-
     if: >-
-      github.event.pull_request.merged == true &&
-      !startsWith(github.head_ref, 'release/branch--')
+      always() &&
+      (
+        github.event_name == 'push' ||
+        (github.event.pull_request.merged == true && !startsWith(github.head_ref, 'release/branch--'))
+      )
 
     uses: ./.github/workflows/token-generate.yml
     with:
