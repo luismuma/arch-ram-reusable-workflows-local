@@ -2,9 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "cdc.pull-request.schema.json",
   "title": "CDC Replication Configuration",
-  "description": "Valida la estructura del JSON de configuración de una replicación CDC.",
+  "description": "Valida la estructura y los valores de una configuración de replicación CDC.",
   "type": "object",
   "additionalProperties": false,
+
   "required": [
     "env",
     "request_type",
@@ -23,30 +24,29 @@
     "change_number",
     "comments"
   ],
+
   "properties": {
     "env": {
       "type": "string",
-      "enum": [
-        "DEV",
-        "PRE",
-        "PRO",
-        "${ENV}"
-      ],
-      "description": "Entorno de ejecución."
+      "enum": ["DEV", "PRE", "PRO", "${ENV}"],
+      "description": "Entorno de ejecución de la replicación.",
+      "examples": ["DEV", "PRE", "PRO"]
     },
+
     "request_type": {
       "type": "string",
-      "enum": [
-        "CREATE",
-        "UPDATE",
-        "DELETE",
-        "${REQUEST_TYPE}"
-      ]
+      "enum": ["CREATE", "UPDATE", "DELETE", "${REQUEST_TYPE}"],
+      "description": "Operación solicitada sobre la replicación."
     },
+
     "project": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^(?!\\s)(?!.*\\s$).+$",
+      "description": "Identificador del proyecto CDC."
     },
+
     "bbdd_engine": {
       "type": "string",
       "enum": [
@@ -54,63 +54,104 @@
         "DB2",
         "MONGODB",
         "${BBDD_ENGINE}"
-      ]
+      ],
+      "description": "Motor de base de datos de origen."
     },
+
     "bbdd_name": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?!\\s)(?!.*\\s$).+$",
+      "description": "Nombre de la base de datos de origen."
     },
+
     "tables": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 500,
+      "uniqueItems": true,
+      "description": "Lista de tablas incluidas en la replicación.",
       "items": {
         "type": "string",
-        "minLength": 1
-      }
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^(?!\\s)(?!.*\\s$).+$"
+      },
+      "examples": [
+        ["SOE.LOGON(*)", "SOE.ADDRESSES(*)"]
+      ]
     },
+
     "replication_type": {
       "type": "string",
-      "enum": [
-        "ONLINE",
-        "${REPLICATION_TYPE}"
-      ]
+      "enum": ["ONLINE", "${REPLICATION_TYPE}"],
+      "description": "Modalidad de replicación."
     },
+
     "target_engine": {
       "type": "string",
-      "enum": [
-        "KAFKA",
-        "AWS-S3",
-        "${TARGET_ENGINE}"
-      ]
+      "enum": ["KAFKA", "AWS-S3", "${TARGET_ENGINE}"],
+      "description": "Motor de destino de la replicación."
     },
+
     "kafka_cluster_name": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?!\\s)(?!.*\\s$).+$",
+      "description": "Nombre del clúster Kafka de destino."
     },
+
     "kafka_identity_pool": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?!\\s)(?!.*\\s$).+$",
+      "description": "Identificador del pool de identidades Kafka."
     },
+
     "kafka_topic_prefix": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 249,
+      "pattern": "^[a-zA-Z0-9._-]+$",
+      "description": "Prefijo utilizado para los topics Kafka."
     },
+
     "target_info": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 1000,
+      "description": "Información adicional del destino."
     },
+
     "user_name": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 150,
+      "pattern": "^(?!\\s)(?!.*\\s$).+$",
+      "description": "Usuario solicitante de la replicación."
     },
+
     "cost_center": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 50,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Código del centro de coste."
     },
+
     "change_number": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 100,
+      "description": "Número de cambio asociado a la solicitud.",
+      "examples": ["CHG123456"]
     },
+
     "comments": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 4000,
+      "description": "Comentarios adicionales de la solicitud."
     }
   }
 }
