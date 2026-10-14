@@ -206,6 +206,73 @@ jobs:
         uses: actions/checkout@v6
 
       # ------------------------------------------------------------------------
+      # NUEVO: DIAGNÓSTICO DEL WORKSPACE Y DEL PROYECTO
+      #
+      # Objetivo:
+      # - Identificar el repositorio y la rama de ejecución.
+      # - Mostrar el directorio de trabajo del runner.
+      # - Localizar directorios y ficheros YAML/JSON.
+      # - Investigar si el proyecto generado ya existe en este workspace.
+      # ------------------------------------------------------------------------
+
+      - name: "NUEVO - Diagnose GitHub workspace and project"
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          echo "================================================"
+          echo "NUEVO - CONTEXTO DE GITHUB ACTIONS"
+          echo "================================================"
+
+          echo "Repository:       $GITHUB_REPOSITORY"
+          echo "Repository owner: $GITHUB_REPOSITORY_OWNER"
+          echo "Workspace:        $GITHUB_WORKSPACE"
+          echo "Runner temp:      $RUNNER_TEMP"
+          echo "Runner OS:        $RUNNER_OS"
+          echo "Workflow:         $GITHUB_WORKFLOW"
+          echo "Job:              $GITHUB_JOB"
+          echo "Run ID:           $GITHUB_RUN_ID"
+          echo "Run number:       $GITHUB_RUN_NUMBER"
+          echo "Ref:              $GITHUB_REF"
+          echo "SHA:              $GITHUB_SHA"
+          echo "Event:            $GITHUB_EVENT_NAME"
+
+          echo ""
+          echo "================================================"
+          echo "NUEVO - CONTENIDO DEL WORKSPACE"
+          echo "================================================"
+
+          pwd
+          ls -la "$GITHUB_WORKSPACE"
+
+          echo ""
+          echo "================================================"
+          echo "NUEVO - POSIBLES DIRECTORIOS DEL PROYECTO"
+          echo "================================================"
+
+          find "$GITHUB_WORKSPACE" \
+            -maxdepth 5 \
+            -type d \
+            \( -name .git -o -name node_modules -o -name .venv \) -prune \
+            -o \
+            -type d \
+            \( -name cdc-controller \
+               -o -name inventory_connections \
+               -o -name generated-config \) \
+            -print
+
+          echo ""
+          echo "================================================"
+          echo "NUEVO - FICHEROS YAML Y JSON DEL WORKSPACE"
+          echo "================================================"
+
+          find "$GITHUB_WORKSPACE" \
+            -maxdepth 6 \
+            -type f \
+            \( -name "*.yaml" -o -name "*.yml" -o -name "*.json" \) \
+            -print | head -200
+
+      # ------------------------------------------------------------------------
       # 2. Clona el repositorio público de inventario CDC.
       #
       # MODIFICADO:
@@ -310,6 +377,88 @@ jobs:
           done
 
           echo "Inventario CDC cargado correctamente."
+
+      ```yaml
+      # ==========================================================================
+      # NUEVO: COPIAR EL INVENTARIO AL PROYECTO EN LA CARPETA inventory
+      #
+      # Objetivo:
+      # - Crear la carpeta inventory en el repositorio que ejecuta el workflow.
+      # - Copiar los dos YAML descargados.
+      # - Verificar su contenido.
+      # ==========================================================================
+
+      - name: "NUEVO - Copy CDC inventory into project"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_DIR="$GITHUB_WORKSPACE/inventory_connections"
+          DEST_DIR="$GITHUB_WORKSPACE/inventory"
+
+          echo "================================================"
+          echo "COPIANDO INVENTARIO AL PROYECTO"
+          echo "================================================"
+
+          mkdir -p "$DEST_DIR"
+
+          for file in \
+            db_connections.yaml \
+            target_connections.yaml
+          do
+            if [[ ! -s "$SOURCE_DIR/$file" ]]; then
+              echo "::error::Fichero de origen inexistente o vacío: $SOURCE_DIR/$file"
+              exit 1
+            fi
+
+            cp "$SOURCE_DIR/$file" "$DEST_DIR/$file"
+            echo "Copiado: inventory/$file"
+          done
+
+          echo ""
+          echo "Contenido de la carpeta inventory:"
+          ls -l "$DEST_DIR"
+
+          test -s "$DEST_DIR/db_connections.yaml"
+          test -s "$DEST_DIR/target_connections.yaml"
+
+          echo "Inventario copiado y verificado correctamente."
+
+      # ==========================================================================
+      # NUEVO: GUARDAR LOS FICHEROS EN LA RAMA REMOTA
+      #
+      # IMPORTANTE:
+      # - Este paso requiere permiso de escritura en el repositorio.
+      # - En un pull_request desde un fork, normalmente no habrá permisos.
+      # - El token GITHUB_TOKEN debe tener contents: write.
+      # ==========================================================================
+
+      - name: "Commit CDC inventory to current branch"
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add inventory/db_connections.yaml \
+                  inventory/target_connections.yaml
+
+          if git diff --cached --quiet; then
+            echo "El inventario no presenta cambios. No se necesita commit."
+            exit 0
+          fi
+
+          git commit -m "chore: update CDC inventory files"
+
+          echo "Inventario preparado en un commit local."
+          echo "Rama actual: $(git branch --show-current)"
+          echo "Commit: $(git rev-parse --short HEAD)"
+
+          # No se realiza push automático desde un workflow de pull request.
+          # Para publicar el commit, debe habilitarse explícitamente
+          # la escritura y definirse la estrategia de actualización de la rama.
   
   
   # ============================================================================
