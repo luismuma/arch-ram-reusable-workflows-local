@@ -199,7 +199,20 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@v6
+      # 2. DIAGNÓSTICO: comprobar que el secreto llega al job
+      - name: Diagnose GitHub token availability
+        shell: bash
+        env:
+          GH_GIT_TOKEN: ${{ secrets.EXTERNAL_GITHUB_TOKEN || secrets.GH_GIT_TOKEN }}
+        run: |
+          set -euo pipefail
 
+          if [[ -n "${GH_GIT_TOKEN:-}" ]]; then
+            echo "Token recibido correctamente."
+          else
+            echo "::error::El workflow reutilizable no ha recibido el token."
+            exit 1
+          fi
       # ------------------------------------------------------------------------
       # 2. Clona el repositorio de inventario CDC
       # ------------------------------------------------------------------------
