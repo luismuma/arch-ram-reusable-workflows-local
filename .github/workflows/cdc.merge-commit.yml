@@ -112,7 +112,7 @@ jobs:
       github.event.pull_request.merged == true &&
       !startsWith(github.head_ref, 'release/branch--')
 
-    uses: luismuma/token-generate-local/.github/workflows/token-generate.yml@main
+    uses: luismuma/token-generate/.github/workflows/token-generate.yml@main
 
     with:
       profile: deployer
