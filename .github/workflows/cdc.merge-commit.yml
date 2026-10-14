@@ -112,13 +112,12 @@ jobs:
       github.event.pull_request.merged == true &&
       !startsWith(github.head_ref, 'release/branch--')
 
-    uses: luismuma/token-generate/.github/workflows/token-generate.yml@main
-
+    uses: ./.github/workflows/token-generate.yml
     with:
-      profile: deployer
+      profile: reader
 
     secrets:
-      EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.EXTERNAL_GITHUB_TOKEN || secrets.GH_GIT_TOKEN }}
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
