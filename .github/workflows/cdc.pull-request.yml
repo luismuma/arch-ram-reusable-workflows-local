@@ -446,50 +446,56 @@ jobs:
           env = env.strip().upper()
 
           engine_aliases = {
-              "ORACLE": "ORACLE",
-              "DB2": "DB2",
-              "MONGO": "MONGO",
-              "MONGODB": "MONGO",
+              "ORACLE": {"ORACLE"},
+              "DB2": {"DB2"},
+              "MONGO": {"MONGO", "MONGODB"},
+              "MONGODB": {"MONGO", "MONGODB"},
           }
 
           if engine not in engine_aliases:
-              raise SystemExit(f"Unsupported BBDD_ENGINE: {engine}")
+              raise SystemExit(f"Unsupported database engine: {engine}")
 
           if env not in {"DEV", "PRE", "PRO"}:
-              raise SystemExit(f"Unsupported ENV: {env}")
+              raise SystemExit(f"Unsupported environment: {env}")
 
           with open(input_file, encoding="utf-8") as stream:
               inventory = yaml.safe_load(stream) or {}
 
           if not isinstance(inventory, dict):
-              raise SystemExit(
-                  "The database inventory must contain a YAML mapping."
-              )
+              raise SystemExit("The database inventory must be a YAML mapping.")
 
           matches = []
 
-          for name, connection in inventory.items():
-              if name == "defaults" or not isinstance(connection, dict):
+          for connection_name, connection in inventory.items():
+              if connection_name == "defaults":
                   continue
 
-              db_engine = str(
-                  connection.get("db_engine", "")
-              ).strip().upper()
+              if not isinstance(connection, dict):
+                  continue
 
-              db_env = str(
-                  connection.get("env", "")
-              ).strip().upper()
+              # Read the database engine from either supported field.
+              db_engine = (
+                  connection.get("BBDD_ENGINE")
+                  or connection.get("db_engine")
+                  or ""
+              )
 
-              if (
-                  db_engine == engine_aliases[engine]
-                  and db_env == env
-              ):
-                  matches.append(name)
+              # Read the environment.
+              db_env = (
+                  connection.get("env")
+                  or connection.get("ENV")
+                  or ""
+              )
+
+              db_engine = str(db_engine).strip().upper()
+              db_env = str(db_env).strip().upper()
+
+              if db_engine in engine_aliases[engine] and db_env == env:
+                  matches.append(connection_name)
 
           if not matches:
               raise SystemExit(
-                  f"No database connections found for "
-                  f"BBDD_ENGINE={engine}, ENV={env}"
+                  f"No connections found for engine={engine}, environment={env}"
               )
 
           with open(output_file, "w", encoding="utf-8") as stream:
@@ -501,8 +507,8 @@ jobs:
                   default_flow_style=False,
               )
 
-          print(f"BBDD_ENGINE: {engine}")
-          print(f"ENV: {env}")
+          print(f"Database engine: {engine}")
+          print(f"Environment: {env}")
           print(f"Connections found: {len(matches)}")
           print(f"Generated file: {output_file}")
           PYTHON
