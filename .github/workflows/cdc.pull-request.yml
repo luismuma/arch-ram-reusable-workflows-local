@@ -17,7 +17,7 @@ name: PR workflow
 run-name: "Build and Test #${{ github.run_number }}: ${{ github.event.pull_request.title }}"
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -378,7 +378,6 @@ jobs:
 
           echo "Inventario CDC cargado correctamente."
 
-      ```yaml
       # ==========================================================================
       # NUEVO: COPIAR EL INVENTARIO AL PROYECTO EN LA CARPETA inventory
       #
