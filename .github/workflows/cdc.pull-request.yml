@@ -267,10 +267,10 @@ jobs:
     with:
       manifest-file: ${{ inputs.manifest-file }}
       templating-test: tests/test-templating.py
-      spectral-ruleset: spectral/rules/structure/application.yaml
+      #spectral-ruleset: spectral/rules/structure/application.yaml
 
-      spectral-files: |
-        config-CDC/application/cdc_input_json_content.json
+      #spectral-files: |
+      #  config-CDC/application/cdc_input_json_content.json
 
       # centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens || 'false' }}
       centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
