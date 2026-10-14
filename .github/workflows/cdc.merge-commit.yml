@@ -112,7 +112,7 @@ jobs:
       github.event.pull_request.merged == true &&
       !startsWith(github.head_ref, 'release/branch--')
 
-    uses: luismuma/token-generate/.github/workflows/token-generate.yml@main
+    uses: luismuma/token-generate-local/.github/workflows/token-generate.yml@main
 
     with:
       profile: deployer
@@ -122,44 +122,44 @@ jobs:
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
-  # 3. VALIDATE MERGE WORKFLOW SCHEMA
+  # 3. VALIDATE MERGE WORKFLOW SCHEMA (Comentado)
   # ============================================================================
   # init:
-  #  name: Validate CDC Merge Workflow
-
-  # needs:
-  #    - token-generate
-
-   # if: >-
-   #  always() &&
-   #   (
-   #     needs.token-generate.result == 'success' ||
-   #     needs.token-generate.result == 'skipped'
-   #   )
-
-   # uses: luismuma/validate-workflow/.github/workflows/validate-workflow.yml@main
-
-   # with:
-   #  workflow_file: cdc.merge-commit.yml
-   #   schema: merge-commit.schema.yml
-   #   centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
-
-   # secrets:
-   #   GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
-   #   GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+  #   name: Validate CDC Merge Workflow
+  #
+  #   needs:
+  #     - token-generate
+  #
+  #   if: >-
+  #     always() &&
+  #     (
+  #       needs.token-generate.result == 'success' ||
+  #       needs.token-generate.result == 'skipped'
+  #     )
+  #
+  #   uses: luismuma/validate-workflow-local/.github/workflows/validate-workflow.yml@main
+  #
+  #   with:
+  #     workflow_file: cdc.merge-commit.yml
+  #     schema: merge-commit.schema.yml
+  #     centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
+  #
+  #   secrets:
+  #     GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+  #     GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
-  # 4. VALIDA RUTA Y SPECTRAL
+  # 4. VALIDA RUTA Y SPECTRAL (Job renombrado de pull-request a merge-commit)
   # ============================================================================
-  pull-request:
+  merge-commit:
     name: Validate CDC application template
     needs:
-      - init
+      - validate-merge-branches
       - token-generate
 
     if: >-
       always() &&
-      needs.init.result == 'success' &&
+      needs.validate-merge-branches.result == 'success' &&
       (
         needs.token-generate.result == 'success' ||
         needs.token-generate.result == 'skipped'
@@ -187,12 +187,12 @@ jobs:
       && 'Release' || 'Snapshot' }} CDC Artifact
 
     needs:
-      - pull-request
+      - merge-commit
       - token-generate
 
     if: >-
       always() &&
-      needs.pull-request.result == 'success' &&
+      needs.merge-commit.result == 'success' &&
       (
         needs.token-generate.result == 'success' ||
         needs.token-generate.result == 'skipped'
@@ -464,7 +464,7 @@ jobs:
       needs.token-generate.result == 'success' &&
       needs.token-generate.outputs.centralized-tokens == 'true'
 
-    uses: luismuma/token-revoke/.github/workflows/token-revoke.yml@main
+    uses: luismuma/token-revoke-local/.github/workflows/token-revoke.yml@main
 
     secrets:
       TOKEN: ${{ needs.token-generate.outputs.token }}
