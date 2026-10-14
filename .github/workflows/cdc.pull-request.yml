@@ -1,4 +1,3 @@
-```yaml
 # Copyright (c) MAPFRE DevOps Platform
 #
 # Pull Request Workflow.
@@ -311,4 +310,4 @@ jobs:
       TOKEN: ${{ needs.token-generate.outputs.token }}
       PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
-```
+
