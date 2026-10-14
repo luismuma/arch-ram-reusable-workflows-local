@@ -1,27 +1,30 @@
-
 # Copyright (c) MAPFRE DevOps Platform
 #
 # CDC Merge Commit Workflow.
 #
 # Triggers:
-#   - A feature/* PR to develop is merged
-#   - A hotfix/* PR to main is merged
 #
 # Output:
-#   - CDC archetype ZIP
-#   - Snapshot package for develop
-#   - Release package for main/master
+#    - CDC archetype ZIP & Specific Configuration ZIP
+#    - Snapshot package for develop
+#    - Release package for main/master
 #
 # Required secrets:
-#   - AZURE_ARTIFACTS_USER
-#   - AZURE_ARTIFACTS_PW
-#   - RAM_GITHUB_GIT_TOKEN
+#    - AZURE_ARTIFACTS_USER
+#    - AZURE_ARTIFACTS_PW
+#    - RAM_GITHUB_GIT_TOKEN
+#    - GH_TOKEN_ENCRYPTION_PASSPHRASE
 
 name: CDC Merge Commit
 
 run-name: >-
   Generate ${{ (github.base_ref == 'main' || github.base_ref == 'master')
   && 'Release' || 'Snapshot' }} Artifact #${{ github.run_number }}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 on:
   workflow_call:
@@ -66,11 +69,42 @@ env:
 
 jobs:
 
-  # ==========================================================
-  # 1. GENERATE CENTRALIZED TOKENS
-  # ==========================================================
+  # ============================================================================
+  # 1. VALIDA LAS RAMAS DE MERGE (ORIGEN / DESTINO)
+  # ============================================================================
+  validate-merge-branches:
+    name: Validate Merge Source and Target Branches
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validar ramas para Merge
+        shell: bash
+        env:
+          SOURCE_BRANCH: ${{ github.ref_name }}
+          TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          echo "================================================"
+          echo "VALIDACIÓN DE RAMAS DE MERGE"
+          echo "================================================"
+          echo "Rama actual/origen: $SOURCE_BRANCH"
+          echo "Rama destino: $TARGET_BRANCH"
+
+          if [[ "$SOURCE_BRANCH" == "develop" || "$SOURCE_BRANCH" == "main" || "$SOURCE_BRANCH" == "master" ]]; then
+             echo "Validación correcta para merge en rama principal: $SOURCE_BRANCH"
+          else
+             echo "::error::Rama no permitida para este flujo."
+             exit 1
+          fi
+
+  # ============================================================================
+  # 2. GENERATE CENTRALIZED TOKENS
+  # ============================================================================
   token-generate:
     name: Generate Centralized Tokens
+    needs:
+      - validate-merge-branches
 
     if: >-
       github.event.pull_request.merged == true &&
@@ -85,9 +119,9 @@ jobs:
       EXTERNAL_GITHUB_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
-  # ==========================================================
-  # 2. VALIDATE MERGE WORKFLOW
-  # ==========================================================
+  # ============================================================================
+  # 3. VALIDATE MERGE WORKFLOW SCHEMA
+  # ============================================================================
   init:
     name: Validate CDC Merge Workflow
 
@@ -112,14 +146,11 @@ jobs:
       GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
-  # ==========================================================
-  # 3. CREATE AND PUBLISH CDC ZIP ARTIFACT
-  # ==========================================================
-  merge:
-    name: >-
-      Generate ${{ (github.base_ref == 'main' || github.base_ref == 'master')
-      && 'Release' || 'Snapshot' }} CDC Artifact
-
+  # ============================================================================
+  # 4. VALIDA RUTA Y SPECTRAL
+  # ============================================================================
+  pull-request:
+    name: Validate CDC application template
     needs:
       - init
       - token-generate
@@ -130,11 +161,39 @@ jobs:
       (
         needs.token-generate.result == 'success' ||
         needs.token-generate.result == 'skipped'
-      ) &&
-      github.event.pull_request.merged == true &&
+      )
+
+    uses: ./.github/workflows/cdc.validate-ruta-and-spectral.yml
+
+    with:
+      manifest-file: ${{ inputs.manifest-file }}
+      templating-test: tests/test-templating.py
+      centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
+
+    secrets:
+      AZURE_ARTIFACTS_USER: ${{ secrets.AZURE_ARTIFACTS_USER }}
+      AZURE_ARTIFACTS_PW: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+  # ============================================================================
+  # 5. CARGA DE INVENTARIO Y CREACIÓN DE ARTEFACTOS (ZIP Y AZURE)
+  # ============================================================================
+  load-cdc-inventory:
+    name: >-
+      Generate ${{ (github.base_ref == 'main' || github.base_ref == 'master')
+      && 'Release' || 'Snapshot' }} CDC Artifact
+
+    needs:
+      - pull-request
+      - token-generate
+
+    if: >-
+      always() &&
+      needs.pull-request.result == 'success' &&
       (
-        (startsWith(github.head_ref, 'feature/') && github.base_ref == 'develop') ||
-        (startsWith(github.head_ref, 'hotfix/') && github.base_ref == 'main')
+        needs.token-generate.result == 'success' ||
+        needs.token-generate.result == 'skipped'
       )
 
     runs-on: ubuntu-latest
@@ -145,9 +204,7 @@ jobs:
 
     steps:
 
-      # --------------------------------------------------------
-      # 3.1 Decrypt token when centralized tokens are enabled
-      # --------------------------------------------------------
+      # 5.1 Decrypt token when centralized tokens are enabled
       - name: Decrypt token
         id: decrypt
         if: needs.token-generate.outputs.centralized-tokens == 'true'
@@ -158,9 +215,7 @@ jobs:
           token: ${{ needs.token-generate.outputs.token }}
           gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
-      # --------------------------------------------------------
-      # 3.2 Checkout the merged code
-      # --------------------------------------------------------
+      # 5.2 Checkout the merged code
       - name: Checkout merged code
         uses: actions/checkout@v6
 
@@ -168,9 +223,7 @@ jobs:
           ref: ${{ github.base_ref }}
           token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
 
-      # --------------------------------------------------------
-      # 3.3 Read manifest metadata
-      # --------------------------------------------------------
+      # 5.3 Read manifest metadata
       - name: Read project name
         id: read-name
         uses: mapfre-tech/action-utils/get-json-attribute@v1
@@ -195,9 +248,7 @@ jobs:
           file: ${{ inputs.manifest-file }}
           attribute: description
 
-      # --------------------------------------------------------
-      # 3.4 Determine artifact version
-      # --------------------------------------------------------
+      # 5.4 Determine artifact version
       - name: Calculate artifact version
         id: version
         shell: bash
@@ -221,10 +272,84 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Artifact version: ${VERSION}"
 
-      # --------------------------------------------------------
-      # 3.5 Create ZIP artifact
-      # --------------------------------------------------------
-      - name: Create CDC ZIP artifact
+      # 5.5 Clone CDC inventory repository and fetch configurations
+      - name: Clone CDC inventory repository
+        shell: bash
+        env:
+          GH_GIT_TOKEN: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO_DIR="$RUNNER_TEMP/ioeu-cdc-repo-piloto-cdc-local"
+          REPO_URL="https://github.com/luismuma/ioeu-cdc-repo-piloto-cdc-local.git"
+
+          if [[ -n "${GH_GIT_TOKEN:-}" ]]; then
+            git -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_GIT_TOKEN" | base64 -w 0)" clone --filter=blob:none --no-checkout "$REPO_URL" "$REPO_DIR"
+          else
+            git clone --filter=blob:none --no-checkout "$REPO_URL" "$REPO_DIR"
+          fi
+
+          cd "$REPO_DIR"
+          git sparse-checkout init --no-cone
+          git sparse-checkout set --no-cone \
+            cdc-controller/config/inventory_connections/db_connections.yaml \
+            cdc-controller/config/inventory_connections/target_connections.yaml
+          git checkout main
+
+          DEST_DIR="$GITHUB_WORKSPACE/inventory_connections"
+          mkdir -p "$DEST_DIR"
+          cp cdc-controller/config/inventory_connections/db_connections.yaml "$DEST_DIR/"
+          cp cdc-controller/config/inventory_connections/target_connections.yaml "$DEST_DIR/"
+
+      # 5.6 Install YAML processing dependencies & Generate filtered database connection names
+      - name: Generate filtered database connection names
+        shell: bash
+        run: |
+          set -euo pipefail
+          INVENTORY_FILE="inventory_connections/db_connections.yaml"
+          JSON_FILE="config-CDC/application/cdc_input_json_content.json"
+          OUTPUT_DIR="generated_inventory"
+          OUTPUT_FILE="$OUTPUT_DIR/db_connection_names.yml"
+
+          mkdir -p "$OUTPUT_DIR"
+          python3 -m pip install PyYAML
+
+          python3 - "$INVENTORY_FILE" "$JSON_FILE" "$OUTPUT_FILE" <<'PYTHON'
+          import json
+          import sys
+          import yaml
+
+          inventory_file, json_file, output_file = sys.argv[1:]
+          with open(json_file, encoding="utf-8") as stream:
+              config = json.load(stream)
+
+          engine = str(config.get("bbdd_engine", "")).strip().upper()
+          env = str(config.get("env", "")).strip().upper()
+
+          engine_aliases = {
+              "ORACLE": {"ORACLE"},
+              "DB2": {"DB2"},
+              "MONGO": {"MONGO", "MONGODB"},
+              "MONGODB": {"MONGO", "MONGODB"},
+          }
+
+          with open(inventory_file, encoding="utf-8") as stream:
+              inventory = yaml.safe_load(stream) or {}
+
+          connection_names = []
+          for name, connection in inventory.items():
+              if name == "defaults" or not isinstance(connection, dict):
+                  continue
+              db_engine = str(connection.get("db_engine") or connection.get("BBDD_ENGINE") or "").strip().upper()
+              db_env = str(connection.get("env") or connection.get("ENV") or "").strip().upper()
+              if db_engine in engine_aliases.get(engine, set()) and db_env == env:
+                  connection_names.append(name)
+
+          with open(output_file, "w", encoding="utf-8") as stream:
+              yaml.safe_dump(connection_names, stream, sort_keys=False, allow_unicode=True, default_flow_style=False)
+          PYTHON
+
+      # 5.7 Create main CDC ZIP archetype artifact
+      - name: Create CDC ZIP archetype artifact
         id: package
         shell: bash
 
@@ -240,25 +365,43 @@ jobs:
           mkdir -p "${ARTIFACT_DIR}"
           rm -f "${ZIP_FILE}"
 
-          # Include the CDC archetype files and FreeMarker templates.
-          # Exclude Git metadata, workflows and the output directory.
+          # Include CDC archetype files and templates, exclude git/workflows/output
           zip -r "${ZIP_FILE}" . \
             -x ".git/*" \
-               ".github/*" \
-               ".gitignore" \
-               "publish_artifact/*"
+                 ".github/*" \
+                 ".gitignore" \
+                 "publish_artifact/*"
 
           test -s "${ZIP_FILE}"
           unzip -t "${ZIP_FILE}"
 
           echo "artifact=${ZIP_FILE}" >> "$GITHUB_OUTPUT"
-
-          echo "Created artifact: ${ZIP_FILE}"
+          echo "Created archetype artifact: ${ZIP_FILE}"
           ls -lh "${ZIP_FILE}"
 
-      # --------------------------------------------------------
-      # 3.6 Publish SNAPSHOT to Azure Artifacts
-      # --------------------------------------------------------
+      # 5.8 Create specific ZIP archive with config and generated inventory
+      - name: Create specific configuration ZIP archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          SPECIFIC_ZIP="publish_artifact/cdc-deployment-package.zip"
+          
+          if [[ ! -f "config-CDC/application/cdc_input_json_content.json" ]]; then
+            echo "::error::Falta el fichero cdc_input_json_content.json"
+            exit 1
+          fi
+          
+          if [[ ! -f "generated_inventory/db_connection_names.yml" ]]; then
+            echo "::error::Falta el fichero db_connection_names.yml"
+            exit 1
+          fi
+          
+          zip "$SPECIFIC_ZIP" config-CDC/application/cdc_input_json_content.json generated_inventory/db_connection_names.yml
+          echo "ZIP específico creado con éxito: $SPECIFIC_ZIP"
+          ls -lh "$SPECIFIC_ZIP"
+
+      # 5.9 Publish SNAPSHOT to Azure Artifacts
       - name: Publish Snapshot Artifact
         if: env.IS_RELEASE != 'true'
 
@@ -276,9 +419,7 @@ jobs:
             ${{ steps.read-description.outputs.value }}
           azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
 
-      # --------------------------------------------------------
-      # 3.7 Publish RELEASE to Azure Artifacts
-      # --------------------------------------------------------
+      # 5.10 Publish RELEASE to Azure Artifacts
       - name: Publish Release Artifact
         if: env.IS_RELEASE == 'true'
 
@@ -296,30 +437,29 @@ jobs:
             ${{ steps.read-description.outputs.value }}
           azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
 
-      # --------------------------------------------------------
-      # 3.8 Upload ZIP to GitHub Actions artifacts too
-      # --------------------------------------------------------
+      # 5.11 Upload ZIP packages to GitHub Actions workflow artifacts
       - name: Upload ZIP as workflow artifact
         uses: actions/upload-artifact@v4
 
         with:
           name: ${{ steps.read-name.outputs.value }}-${{ steps.version.outputs.version }}
-          path: ${{ steps.package.outputs.artifact }}
+          path: publish_artifact/
           if-no-files-found: error
           retention-days: 30
 
-  # ==========================================================
-  # 4. REVOKE CENTRALIZED TOKENS
-  # ==========================================================
+  # ============================================================================
+  # 6. REVOKE CENTRALIZED TOKENS
+  # ============================================================================
   revoke-tokens:
     name: Revoke Centralized Tokens
 
     needs:
       - token-generate
-      - merge
+      - load-cdc-inventory
 
     if: >-
       always() &&
+      needs.token-generate.result == 'success' &&
       needs.token-generate.outputs.centralized-tokens == 'true'
 
     uses: ./.github/workflows/token-revoke.yml
