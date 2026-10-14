@@ -267,7 +267,7 @@ jobs:
     with:
       manifest-file: ${{ inputs.manifest-file }}
       templating-test: tests/test-templating.py
-      spectral-ruleset: spectral/rules/structure/ruleset.yml
+      spectral-ruleset: spectral/rules/structure/application.yaml
 
       spectral-files: |
         config-CDC/application/cdc_input_json_content.json
