@@ -1,3 +1,4 @@
+```yaml
 # Copyright (c) MAPFRE DevOps Platform
 #
 # Pull Request Workflow.
@@ -39,12 +40,12 @@ on:
         description: 'Password Azure Artifacts'
         required: true
 
-      # NUEVO: nombre genérico del token de GitHub.
+      # Token genérico para acceder a repositorios externos.
       EXTERNAL_GITHUB_TOKEN:
         description: 'Generic external GitHub token'
         required: false
 
-      # COMPATIBILIDAD: nombre anterior.
+      # Compatibilidad con el nombre anterior.
       GH_GIT_TOKEN:
         description: 'GitHub Token for checking out the code'
         required: false
@@ -52,20 +53,14 @@ on:
       GH_TOKEN_ENCRYPTION_PASSPHRASE:
         description: 'Passphrase for encrypting centralized tokens'
         required: false
-  
+
 jobs:
 
   # ============================================================================
   # INIT: VALIDACIÓN DEL WORKFLOW DE GITHUB ACTIONS
   # TEMPORALMENTE DESACTIVADA
   # ============================================================================
-  #
-  # Se comenta este job para no ejecutar validate-workflow.yml ni
-  # pull-request.schema.json.
-  #
-  # Para volver a activarlo, descomenta este bloque y añade init a las
-  # dependencias de los jobs que lo necesiten.
-  #
+
   # init:
   #   name: Validate GitHub Workflow
   #   uses: ./.github/workflows/validate-workflow.yml
@@ -133,116 +128,19 @@ jobs:
 
     with:
       profile: reader
-    
+
     secrets:
-      # NUEVO: acepta el secreto genérico si se ha proporcionado.
-      # COMPATIBILIDAD: si no existe, utiliza GH_GIT_TOKEN.
       EXTERNAL_GITHUB_TOKEN: ${{ secrets.EXTERNAL_GITHUB_TOKEN || secrets.GH_GIT_TOKEN }}
-
-      # Se mantiene la contraseña de cifrado.
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
-
-    #secrets:
-    #  EXTERNAL_GITHUB_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
-    #  GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
   # PREPARE Y VALIDACIÓN JSON SCHEMA
   # TEMPORALMENTE DESACTIVADO
   # ============================================================================
-  #
+
   # Este job queda comentado.
-  #
-  # Sus funciones anteriores eran:
-  #   1. Descifrar el token centralizado.
-  #   2. Descargar los inventarios CDC.
-  #   3. Validar el JSON de configuración contra JSON Schema.
-  #
-  # Si se necesita recuperar la descarga de inventarios, se puede crear
-  # un job independiente.
-  #
-  # prepare:
-  #   name: Prepare and Validate Schema
-  #   needs:
-  #     - validate-pr-branches
-  #     - token-generate
-  #
-  #   if: >-
-  #     always() &&
-  #     needs.validate-pr-branches.result == 'success' &&
-  #     (
-  #       needs.token-generate.result == 'success' ||
-  #       needs.token-generate.result == 'skipped'
-  #     )
-  #
-  #   runs-on: ubuntu-latest
-  #
-  #   steps:
-  #     - name: Decrypt token
-  #       id: decrypt
-  #       if: >-
-  #         needs.token-generate.result == 'success' &&
-  #         needs.token-generate.outputs.centralized-tokens == 'true'
-  #       uses: luismuma/action-ci-token/decrypt@v1
-  #       with:
-  #         token: ${{ needs.token-generate.outputs.platform-token }}
-  #         gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
-  #
-  #     - name: Checkout code
-  #       uses: actions/checkout@v6
-  #
-  #     - name: Clone CDC inventory repository
-  #       shell: bash
-  #       env:
-  #         GH_GIT_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
-  #       run: |
-  #         set -euo pipefail
-  #
-  #         if [[ -z "${GH_GIT_TOKEN:-}" ]]; then
-  #           echo "::error::GH_GIT_TOKEN no está configurado."
-  #           exit 1
-  #         fi
-  #
-  #         git \
-  #           -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_GIT_TOKEN" | base64 -w 0)" \
-  #           clone \
-  #           --filter=blob:none \
-  #           --no-checkout \
-  #           https://github.com/luismuma/ioeu-cdc-repo-piloto-cdc-local.git \
-  #           "$RUNNER_TEMP/ioeu-cdc-repo-piloto-cdc-local"
-  #
-  #         cd "$RUNNER_TEMP/ioeu-cdc-repo-piloto-cdc-local"
-  #
-  #         git sparse-checkout init --no-cone
-  #
-  #         git sparse-checkout set --no-cone \
-  #           cdc-controller/config/inventory_connections/db_connections.yaml \
-  #           cdc-controller/config/inventory_connections/target_connections.yaml
-  #
-  #         git checkout main
-  #
-  #         mkdir -p "$GITHUB_WORKSPACE/inventory_connections"
-  #
-  #         cp \
-  #           cdc-controller/config/inventory_connections/db_connections.yaml \
-  #           "$GITHUB_WORKSPACE/inventory_connections/"
-  #
-  #         cp \
-  #           cdc-controller/config/inventory_connections/target_connections.yaml \
-  #           "$GITHUB_WORKSPACE/inventory_connections/"
-  #
-  #     # ---------------------------------------------------------------
-  #     # VALIDACIÓN JSON CONTRA EL SCHEMA CORPORATIVO: DESACTIVADA
-  #     # ---------------------------------------------------------------
-  #
-  #     - name: Validate CDC Config (JSON Schema)
-  #       uses: luismuma/action-validation-schema/json@v1
-  #       with:
-  #         schema: workflow-schemas/cdc.pull-request.schema.yml
-  #         schema-repository: luismuma/arch-ram-reusable-workflows
-  #         schema-repository-ref: ${{ needs.init.outputs.workflow_ref }}
-  #         token: ${{ steps.decrypt.outputs.token || secrets.GH_GIT_TOKEN }}
-  #         files: config-CDC/application/cdc_input_json_content.json
+  # Sus funciones anteriores eran descifrar el token centralizado,
+  # descargar inventarios CDC y validar el JSON contra JSON Schema.
 
   # ============================================================================
   # VALIDA RUTAS, TEMPLATING Y ESTRUCTURA MEDIANTE SPECTRAL
@@ -268,22 +166,123 @@ jobs:
       manifest-file: ${{ inputs.manifest-file }}
       templating-test: tests/test-templating.py
       #spectral-ruleset: spectral/rules/structure/application.yaml
-
       #spectral-files: |
       #  config-CDC/application/cdc_input_json_content.json
-
-      # centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens || 'false' }}
       centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
 
     secrets:
       AZURE_ARTIFACTS_USER: ${{ secrets.AZURE_ARTIFACTS_USER }}
       AZURE_ARTIFACTS_PW: ${{ secrets.AZURE_ARTIFACTS_PW }}
-
-      # CAMBIO: acepta el secreto genérico o el nombre antiguo.
       GH_GIT_TOKEN: ${{ secrets.EXTERNAL_GITHUB_TOKEN || secrets.GH_GIT_TOKEN }}
-
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
-  
+
+  # ============================================================================
+  # NUEVO JOB: DESCARGA LOS FICHEROS DEL INVENTARIO CDC
+  # Se ejecuta después de pull-request y antes de revoke-tokens.
+  # ============================================================================
+
+  load-cdc-inventory:
+    name: Load CDC Inventory Files
+
+    needs:
+      - pull-request
+
+    if: >-
+      always() &&
+      needs.pull-request.result == 'success'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------------------
+      # 1. Checkout del repositorio que ejecuta el workflow
+      # ------------------------------------------------------------------------
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # ------------------------------------------------------------------------
+      # 2. Clona el repositorio de inventario CDC
+      # ------------------------------------------------------------------------
+
+      - name: Clone CDC inventory repository
+        shell: bash
+        env:
+          GH_GIT_TOKEN: ${{ secrets.EXTERNAL_GITHUB_TOKEN || secrets.GH_GIT_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_GIT_TOKEN:-}" ]]; then
+            echo "::error::No está configurado EXTERNAL_GITHUB_TOKEN ni GH_GIT_TOKEN."
+            exit 1
+          fi
+
+          REPO_DIR="$RUNNER_TEMP/ioeu-cdc-repo-piloto-cdc-local"
+
+          git \
+            -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_GIT_TOKEN" | base64 -w 0)" \
+            clone \
+            --filter=blob:none \
+            --no-checkout \
+            https://github.com/luismuma/ioeu-cdc-repo-piloto-cdc-local.git \
+            "$REPO_DIR"
+
+          cd "$REPO_DIR"
+
+          git sparse-checkout init --no-cone
+
+          git sparse-checkout set --no-cone \
+            cdc-controller/config/inventory_connections/db_connections.yaml \
+            cdc-controller/config/inventory_connections/target_connections.yaml
+
+          git checkout main
+
+          # --------------------------------------------------------------------
+          # 3. Copia los ficheros al workspace del job
+          # --------------------------------------------------------------------
+
+          DEST_DIR="$GITHUB_WORKSPACE/inventory_connections"
+
+          mkdir -p "$DEST_DIR"
+
+          for file in \
+            cdc-controller/config/inventory_connections/db_connections.yaml \
+            cdc-controller/config/inventory_connections/target_connections.yaml
+          do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::No se encuentra el fichero: $file"
+              exit 1
+            fi
+
+            cp "$file" "$DEST_DIR/"
+          done
+
+      # ------------------------------------------------------------------------
+      # 4. Verifica los ficheros descargados
+      # ------------------------------------------------------------------------
+
+      - name: Verify CDC inventory files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "================================================"
+          echo "VERIFICACIÓN DEL INVENTARIO CDC"
+          echo "================================================"
+
+          for file in \
+            inventory_connections/db_connections.yaml \
+            inventory_connections/target_connections.yaml
+          do
+            if [[ ! -s "$file" ]]; then
+              echo "::error::El fichero no existe o está vacío: $file"
+              exit 1
+            fi
+
+            echo "OK: $file"
+          done
+
+          echo "Inventario CDC cargado correctamente."
 
   # ============================================================================
   # REVOCA LOS TOKENS CENTRALIZADOS
@@ -291,13 +290,16 @@ jobs:
 
   revoke-tokens:
     name: Revoke Centralized Tokens
+
     needs:
       - pull-request
+      - load-cdc-inventory
       - token-generate
 
-    # always() permite intentar la revocación aunque falle pull-request.
-    # Solo se intenta cuando token-generate indica que existen tokens
-    # centralizados que deben revocarse.
+    # always() permite intentar la revocación incluso si falla la
+    # validación o la descarga del inventario.
+    # Solo se intenta si token-generate terminó correctamente y
+    # generó tokens centralizados que deben revocarse.
     if: >-
       always() &&
       needs.token-generate.result == 'success' &&
@@ -309,3 +311,4 @@ jobs:
       TOKEN: ${{ needs.token-generate.outputs.token }}
       PLATFORM_TOKEN: ${{ needs.token-generate.outputs.platform-token }}
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+```
