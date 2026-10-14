@@ -3,6 +3,8 @@
 # CDC Merge Commit Workflow.
 #
 # Triggers:
+#    - A push or merge to develop (Snapshot)
+#    - A push or merge to main/master (Release)
 #
 # Output:
 #    - CDC archetype ZIP & Specific Configuration ZIP
