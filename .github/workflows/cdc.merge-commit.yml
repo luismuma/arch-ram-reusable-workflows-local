@@ -465,7 +465,7 @@ jobs:
       needs.token-generate.result == 'success' &&
       needs.token-generate.outputs.centralized-tokens == 'true'
 
-    uses: luismuma/token-revoke-local/.github/workflows/token-revoke.yml@main
+    uses: ./.github/workflows/token-generate.yml
 
     secrets:
       TOKEN: ${{ needs.token-generate.outputs.token }}
