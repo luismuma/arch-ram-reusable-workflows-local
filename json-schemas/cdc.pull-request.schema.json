@@ -43,8 +43,8 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 100,
-      "pattern": "^(?!\\s)(?!.*\\s$).+$",
-      "description": "Identificador del proyecto CDC."
+      "pattern": "^((?!\\s)(?!.*\\s$).+|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+      "description": "Identificador del proyecto CDC o variable de plantilla."
     },
 
     "bbdd_engine": {
@@ -62,8 +62,8 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "pattern": "^(?!\\s)(?!.*\\s$).+$",
-      "description": "Nombre de la base de datos de origen."
+      "pattern": "^((?!\\s)(?!.*\\s$).+|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+      "description": "Nombre de la base de datos de origen o variable de plantilla."
     },
 
     "tables": {
@@ -76,7 +76,7 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 256,
-        "pattern": "^(?!\\s)(?!.*\\s$).+$"
+        "pattern": "^((?!\\s)(?!.*\\s$).+|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$"
       },
       "examples": [
         ["SOE.LOGON(*)", "SOE.ADDRESSES(*)"]
@@ -99,59 +99,62 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "pattern": "^(?!\\s)(?!.*\\s$).+$",
-      "description": "Nombre del clúster Kafka de destino."
+      "pattern": "^((?!\\s)(?!.*\\s$).+|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+      "description": "Nombre del clúster Kafka de destino o variable de plantilla."
     },
 
     "kafka_identity_pool": {
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "pattern": "^(?!\\s)(?!.*\\s$).+$",
-      "description": "Identificador del pool de identidades Kafka."
+      "pattern": "^((?!\\s)(?!.*\\s$).+|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+      "description": "Identificador del pool de identidades Kafka o variable de plantilla."
     },
 
     "kafka_topic_prefix": {
       "type": "string",
       "minLength": 1,
       "maxLength": 249,
-      "pattern": "^[a-zA-Z0-9._-]+$",
-      "description": "Prefijo utilizado para los topics Kafka."
+      "pattern": "^([a-zA-Z0-9._-]+|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+      "description": "Prefijo utilizado para los topics Kafka o variable de plantilla."
     },
 
     "target_info": {
       "type": "string",
       "maxLength": 50,
-      "description": "Información adicional del destino."
+      "pattern": "^(.*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+      "description": "Información adicional del destino o variable de plantilla."
     },
 
     "user_name": {
       "type": "string",
       "minLength": 1,
       "maxLength": 50,
-      "pattern": "^(?!\\s)(?!.*\\s$).+$",
-      "description": "Usuario solicitante de la replicación."
+      "pattern": "^((?!\\s)(?!.*\\s$).+|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+      "description": "Usuario solicitante de la replicación o variable de plantilla."
     },
 
     "cost_center": {
       "type": "string",
       "minLength": 1,
       "maxLength": 50,
-      "pattern": "^[A-Za-z0-9_-]+$",
-      "description": "Código del centro de coste."
+      "pattern": "^([A-Za-z0-9_-]+|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+      "description": "Código del centro de coste o variable de plantilla."
     },
 
     "change_number": {
       "type": "string",
       "maxLength": 25,
-      "description": "Número de cambio asociado a la solicitud.",
+      "pattern": "^(.*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+      "description": "Número de cambio asociado a la solicitud o variable de plantilla.",
       "examples": ["CHG123456"]
     },
 
     "comments": {
       "type": "string",
       "maxLength": 50,
-      "description": "Comentarios adicionales de la solicitud."
+      "pattern": "^(.*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})$",
+      "description": "Comentarios adicionales de la solicitud o variable de plantilla."
     }
   }
 }
