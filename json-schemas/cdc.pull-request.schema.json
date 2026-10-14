@@ -121,14 +121,14 @@
 
     "target_info": {
       "type": "string",
-      "maxLength": 1000,
+      "maxLength": 50,
       "description": "Información adicional del destino."
     },
 
     "user_name": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 150,
+      "maxLength": 50,
       "pattern": "^(?!\\s)(?!.*\\s$).+$",
       "description": "Usuario solicitante de la replicación."
     },
@@ -143,14 +143,14 @@
 
     "change_number": {
       "type": "string",
-      "maxLength": 100,
+      "maxLength": 25,
       "description": "Número de cambio asociado a la solicitud.",
       "examples": ["CHG123456"]
     },
 
     "comments": {
       "type": "string",
-      "maxLength": 4000,
+      "maxLength": 50,
       "description": "Comentarios adicionales de la solicitud."
     }
   }
