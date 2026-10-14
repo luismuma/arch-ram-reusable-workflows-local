@@ -272,7 +272,8 @@ jobs:
       spectral-files: |
         config-CDC/application/cdc_input_json_content.json.ftl
 
-      centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens || 'false' }}
+      # centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens || 'false' }}
+      centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
 
     secrets:
       AZURE_ARTIFACTS_USER: ${{ secrets.AZURE_ARTIFACTS_USER }}
