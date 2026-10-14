@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cdc.pull-request.schema.json",
+  "title": "CDC Replication Configuration",
+  "description": "Valida la estructura del JSON de configuración de una replicación CDC.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "env",
+    "request_type",
+    "project",
+    "bbdd_engine",
+    "bbdd_name",
+    "tables",
+    "replication_type",
+    "target_engine",
+    "kafka_cluster_name",
+    "kafka_identity_pool",
+    "kafka_topic_prefix",
+    "target_info",
+    "user_name",
+    "cost_center",
+    "change_number",
+    "comments"
+  ],
+  "properties": {
+    "env": {
+      "type": "string",
+      "enum": [
+        "DEV",
+        "PRE",
+        "PRO",
+        "${ENV}"
+      ],
+      "description": "Entorno de ejecución."
+    },
+    "request_type": {
+      "type": "string",
+      "enum": [
+        "CREATE",
+        "UPDATE",
+        "DELETE",
+        "${REQUEST_TYPE}"
+      ]
+    },
+    "project": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bbdd_engine": {
+      "type": "string",
+      "enum": [
+        "ORACLE",
+        "DB2",
+        "MONGODB",
+        "${BBDD_ENGINE}"
+      ]
+    },
+    "bbdd_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tables": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "replication_type": {
+      "type": "string",
+      "enum": [
+        "ONLINE",
+        "${REPLICATION_TYPE}"
+      ]
+    },
+    "target_engine": {
+      "type": "string",
+      "enum": [
+        "KAFKA",
+        "AWS-S3",
+        "${TARGET_ENGINE}"
+      ]
+    },
+    "kafka_cluster_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kafka_identity_pool": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kafka_topic_prefix": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_info": {
+      "type": "string"
+    },
+    "user_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cost_center": {
+      "type": "string",
+      "minLength": 1
+    },
+    "change_number": {
+      "type": "string"
+    },
+    "comments": {
+      "type": "string"
+    }
+  }
+}
