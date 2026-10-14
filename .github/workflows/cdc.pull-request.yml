@@ -9,8 +9,8 @@
 # Required secrets:
 #   - AZURE_ARTIFACTS_USER
 #   - AZURE_ARTIFACTS_PW
-#   - GH_GIT_TOKEN
-#   - GH_TOKEN_ENCRYPTION_PASSPHRASE
+#   - EXTERNAL_GITHUB_TOKEN or GH_GIT_TOKEN
+#   - GH_TOKEN_ENCRYPTION_PASSPHRASE (when centralized tokens are enabled)
 
 name: PR workflow
 
@@ -39,14 +39,20 @@ on:
         description: 'Password Azure Artifacts'
         required: true
 
+      # NUEVO: nombre genérico del token de GitHub.
+      EXTERNAL_GITHUB_TOKEN:
+        description: 'Generic external GitHub token'
+        required: false
+
+      # COMPATIBILIDAD: nombre anterior.
       GH_GIT_TOKEN:
         description: 'GitHub Token for checking out the code'
         required: false
 
       GH_TOKEN_ENCRYPTION_PASSPHRASE:
-        description: 'Passphrase for decrypting the GitHub token'
+        description: 'Passphrase for encrypting centralized tokens'
         required: false
-
+  
 jobs:
 
   # ============================================================================
@@ -127,10 +133,18 @@ jobs:
 
     with:
       profile: reader
-
+    
     secrets:
-      EXTERNAL_GITHUB_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+      # NUEVO: acepta el secreto genérico si se ha proporcionado.
+      # COMPATIBILIDAD: si no existe, utiliza GH_GIT_TOKEN.
+      EXTERNAL_GITHUB_TOKEN: ${{ secrets.EXTERNAL_GITHUB_TOKEN || secrets.GH_GIT_TOKEN }}
+
+      # Se mantiene la contraseña de cifrado.
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+
+    #secrets:
+    #  EXTERNAL_GITHUB_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+    #  GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
   # PREPARE Y VALIDACIÓN JSON SCHEMA
@@ -263,8 +277,12 @@ jobs:
     secrets:
       AZURE_ARTIFACTS_USER: ${{ secrets.AZURE_ARTIFACTS_USER }}
       AZURE_ARTIFACTS_PW: ${{ secrets.AZURE_ARTIFACTS_PW }}
-      GH_GIT_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
+
+      # CAMBIO: acepta el secreto genérico o el nombre antiguo.
+      GH_GIT_TOKEN: ${{ secrets.EXTERNAL_GITHUB_TOKEN || secrets.GH_GIT_TOKEN }}
+
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+  
 
   # ============================================================================
   # REVOCA LOS TOKENS CENTRALIZADOS
