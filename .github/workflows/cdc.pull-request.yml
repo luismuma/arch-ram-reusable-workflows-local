@@ -270,7 +270,7 @@ jobs:
       spectral-ruleset: spectral/rules/structure/ruleset.yml
 
       spectral-files: |
-        config-CDC/application/cdc_input_json_content.json.ftl
+        config-CDC/application/cdc_input_json_content.json
 
       # centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens || 'false' }}
       centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
