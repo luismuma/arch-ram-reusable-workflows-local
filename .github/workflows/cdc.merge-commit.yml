@@ -112,7 +112,7 @@ jobs:
       github.event.pull_request.merged == true &&
       !startsWith(github.head_ref, 'release/branch--')
 
-    uses: ./.github/workflows/token-generate.yml
+    uses: luismuma/token-generate/.github/workflows/token-generate.yml@main
 
     with:
       profile: deployer
@@ -124,29 +124,29 @@ jobs:
   # ============================================================================
   # 3. VALIDATE MERGE WORKFLOW SCHEMA
   # ============================================================================
-  init:
-    name: Validate CDC Merge Workflow
+  # init:
+  #  name: Validate CDC Merge Workflow
 
-    needs:
-      - token-generate
+  # needs:
+  #    - token-generate
 
-    if: >-
-      always() &&
-      (
-        needs.token-generate.result == 'success' ||
-        needs.token-generate.result == 'skipped'
-      )
+   # if: >-
+   #  always() &&
+   #   (
+   #     needs.token-generate.result == 'success' ||
+   #     needs.token-generate.result == 'skipped'
+   #   )
 
-    uses: ./.github/workflows/validate-workflow.yml
+   # uses: luismuma/validate-workflow/.github/workflows/validate-workflow.yml@main
 
-    with:
-      workflow_file: cdc.merge-commit.yml
-      schema: merge-commit.schema.yml
-      centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
+   # with:
+   #  workflow_file: cdc.merge-commit.yml
+   #   schema: merge-commit.schema.yml
+   #   centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
 
-    secrets:
-      GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
-      GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
+   # secrets:
+   #   GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
+   #   GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
   # 4. VALIDA RUTA Y SPECTRAL
@@ -165,7 +165,7 @@ jobs:
         needs.token-generate.result == 'skipped'
       )
 
-    uses: ./.github/workflows/cdc.validate-ruta-and-spectral.yml
+    uses: luismuma/arch-ram-reusable-workflows-local/.github/workflows/cdc.validate-ruta-and-spectral.yml@main
 
     with:
       manifest-file: ${{ inputs.manifest-file }}
@@ -211,7 +211,7 @@ jobs:
         id: decrypt
         if: needs.token-generate.outputs.centralized-tokens == 'true'
 
-        uses: mapfre-tech/action-ci-token/decrypt@v1
+        uses: luismuma/action-ci-token-local/decrypt@v1
 
         with:
           token: ${{ needs.token-generate.outputs.token }}
@@ -228,7 +228,7 @@ jobs:
       # 5.3 Read manifest metadata
       - name: Read project name
         id: read-name
-        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        uses: luismuma/action-utils-local/get-json-attribute@v1
 
         with:
           file: ${{ inputs.manifest-file }}
@@ -236,7 +236,7 @@ jobs:
 
       - name: Read project version
         id: read-version
-        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        uses: luismuma/action-utils-local/get-json-attribute@v1
 
         with:
           file: ${{ inputs.manifest-file }}
@@ -244,7 +244,7 @@ jobs:
 
       - name: Read project description
         id: read-description
-        uses: mapfre-tech/action-utils/get-json-attribute@v1
+        uses: luismuma/action-utils-local/get-json-attribute@v1
 
         with:
           file: ${{ inputs.manifest-file }}
@@ -407,7 +407,7 @@ jobs:
       - name: Publish Snapshot Artifact
         if: env.IS_RELEASE != 'true'
 
-        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+        uses: luismuma/action-azure-artifacts-local/publish-package@v1
 
         with:
           feed: snapshots
@@ -425,7 +425,7 @@ jobs:
       - name: Publish Release Artifact
         if: env.IS_RELEASE == 'true'
 
-        uses: mapfre-tech/action-azure-artifacts/publish-package@v1
+        uses: luismuma/action-azure-artifacts-local/publish-package@v1
 
         with:
           feed: releases
@@ -464,7 +464,7 @@ jobs:
       needs.token-generate.result == 'success' &&
       needs.token-generate.outputs.centralized-tokens == 'true'
 
-    uses: ./.github/workflows/token-revoke.yml
+    uses: luismuma/token-revoke/.github/workflows/token-revoke.yml@main
 
     secrets:
       TOKEN: ${{ needs.token-generate.outputs.token }}
