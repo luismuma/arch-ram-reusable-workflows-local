@@ -475,7 +475,7 @@ jobs:
       needs.token-generate.result == 'success' &&
       needs.token-generate.outputs.centralized-tokens == 'true'
 
-    uses: ./.github/workflows/token-generate.yml
+    uses: ./.github/workflows/token-revoke.yml
 
     secrets:
       TOKEN: ${{ needs.token-generate.outputs.token }}
