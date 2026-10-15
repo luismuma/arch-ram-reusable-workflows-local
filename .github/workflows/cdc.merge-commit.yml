@@ -215,6 +215,21 @@ jobs:
           token: ${{ needs.token-generate.outputs.token }}
           gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
+      
+      - name: Verify checkout token availability
+        shell: bash
+        env:
+          DECRYPTED_TOKEN: ${{ steps.decrypt.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
+        run: |
+          if [ -n "$DECRYPTED_TOKEN" ]; then
+            echo "Decrypted token is available."
+          elif [ -n "$FALLBACK_TOKEN" ]; then
+            echo "Fallback token is available."
+          else
+            echo "::error::No checkout token is available."
+            exit 1
+          fi
       # ------------------------------------------------------------------------
       # 5.2 CHECKOUT MERGED CODE
       # ------------------------------------------------------------------------
