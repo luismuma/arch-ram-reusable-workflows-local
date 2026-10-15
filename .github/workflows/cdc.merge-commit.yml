@@ -209,7 +209,7 @@ jobs:
         id: decrypt
         if: needs.token-generate.outputs.centralized-tokens == 'true'
 
-        uses: luismuma/action-ci-token-local/decrypt@v1
+        uses: luismuma/action-ci-token-local/decrypt@main
 
         with:
           token: ${{ needs.token-generate.outputs.token }}
