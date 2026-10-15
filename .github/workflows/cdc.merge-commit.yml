@@ -2,20 +2,13 @@
 #
 # CDC Merge Commit Workflow.
 #
-# Triggers:
-#    - A push or merge to develop (Snapshot)
-#    - A push or merge to main/master (Release)
-#
 # Output:
-#    - CDC archetype ZIP & Specific Configuration ZIP
-#    - Snapshot package for develop
-#    - Release package for main/master
+#   - CDC archetype ZIP
+#   - Specific Configuration ZIP
+#   - GitHub Actions workflow artifact containing both ZIP files
 #
-# Required secrets:
-#    - AZURE_ARTIFACTS_USER
-#    - AZURE_ARTIFACTS_PW
-#    - RAM_GITHUB_GIT_TOKEN
-#    - GH_TOKEN_ENCRYPTION_PASSPHRASE
+# Azure Artifacts publication is temporarily disabled.
+# action-utils-local is temporarily replaced with Python.
 
 name: CDC Merge Commit
 
@@ -71,10 +64,10 @@ env:
 
 jobs:
 
- 
   # ============================================================================
   # 1. VALIDATE MERGE SOURCE AND TARGET BRANCHES
   # ============================================================================
+
   validate-merge-branches:
     name: Validate Merge Source and Target Branches
     runs-on: ubuntu-latest
@@ -109,14 +102,15 @@ jobs:
 
           echo "Merge branch validation successful."
 
-  
   # ============================================================================
   # 2. GENERATE CENTRALIZED TOKENS
   # ============================================================================
+
   token-generate:
     name: Generate Centralized Tokens
     needs:
       - validate-merge-branches
+
     if: >-
       always() &&
       (
@@ -125,6 +119,7 @@ jobs:
       )
 
     uses: ./.github/workflows/token-generate.yml
+
     with:
       profile: reader
 
@@ -133,37 +128,25 @@ jobs:
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
-  # 3. VALIDATE MERGE WORKFLOW SCHEMA (Comentado)
+  # 3. VALIDATE MERGE WORKFLOW SCHEMA (COMMENTED)
   # ============================================================================
+
   # init:
   #   name: Validate CDC Merge Workflow
-  #
   #   needs:
   #     - token-generate
-  #
-  #   if: >-
-  #     always() &&
-  #     (
-  #       needs.token-generate.result == 'success' ||
-  #       needs.token-generate.result == 'skipped'
-  #     )
-  #
   #   uses: luismuma/validate-workflow-local/.github/workflows/validate-workflow.yml@main
-  #
   #   with:
   #     workflow_file: cdc.merge-commit.yml
   #     schema: merge-commit.schema.yml
-  #     centralized-tokens: ${{ needs.token-generate.outputs.centralized-tokens == 'true' }}
-  #
-  #   secrets:
-  #     GH_GIT_TOKEN: ${{ needs.token-generate.outputs.platform-token || secrets.RAM_GITHUB_GIT_TOKEN }}
-  #     GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
-  # 4. VALIDA RUTA Y SPECTRAL (Job renombrado de pull-request a merge-commit)
+  # 4. VALIDATE RUTA AND SPECTRAL
   # ============================================================================
+
   merge-commit:
     name: Validate CDC application template
+
     needs:
       - validate-merge-branches
       - token-generate
@@ -190,8 +173,9 @@ jobs:
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
-  # 5. CARGA DE INVENTARIO Y CREACIÓN DE ARTEFACTOS (ZIP Y AZURE)
+  # 5. LOAD INVENTORY AND CREATE ZIP ARTIFACTS
   # ============================================================================
+
   load-cdc-inventory:
     name: >-
       Generate ${{ (github.base_ref == 'main' || github.base_ref == 'master')
@@ -217,7 +201,10 @@ jobs:
 
     steps:
 
-      # 5.1 Decrypt token when centralized tokens are enabled
+      # ------------------------------------------------------------------------
+      # 5.1 DECRYPT CENTRALIZED TOKEN
+      # ------------------------------------------------------------------------
+
       - name: Decrypt token
         id: decrypt
         if: needs.token-generate.outputs.centralized-tokens == 'true'
@@ -228,7 +215,10 @@ jobs:
           token: ${{ needs.token-generate.outputs.token }}
           gh_token_encryption_passphrase: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
-      # 5.2 Checkout the merged code
+      # ------------------------------------------------------------------------
+      # 5.2 CHECKOUT MERGED CODE
+      # ------------------------------------------------------------------------
+
       - name: Checkout merged code
         uses: actions/checkout@v6
 
@@ -236,42 +226,79 @@ jobs:
           ref: ${{ github.base_ref }}
           token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
 
-      # 5.3 Read manifest metadata
-      - name: Read project name
-        id: read-name
-        uses: luismuma/action-utils-local/get-json-attribute@v1
+      # ------------------------------------------------------------------------
+      # 5.3 READ PROJECT METADATA
+      # Original action-utils-local calls preserved as comments.
+      # Python is used temporarily until the action is available.
+      # ------------------------------------------------------------------------
 
-        with:
-          file: ${{ inputs.manifest-file }}
-          attribute: name
+      # - name: Read project name
+      #   id: read-name
+      #   uses: luismuma/action-utils-local/get-json-attribute@v1
+      #   with:
+      #     file: ${{ inputs.manifest-file }}
+      #     attribute: name
+      #
+      # - name: Read project version
+      #   id: read-version
+      #   uses: luismuma/action-utils-local/get-json-attribute@v1
+      #   with:
+      #     file: ${{ inputs.manifest-file }}
+      #     attribute: version
+      #
+      # - name: Read project description
+      #   id: read-description
+      #   uses: luismuma/action-utils-local/get-json-attribute@v1
+      #   with:
+      #     file: ${{ inputs.manifest-file }}
+      #     attribute: description
 
-      - name: Read project version
-        id: read-version
-        uses: luismuma/action-utils-local/get-json-attribute@v1
+      - name: Read project metadata
+        id: read-metadata
+        shell: bash
+        env:
+          MANIFEST_FILE: ${{ inputs.manifest-file }}
+        run: |
+          set -euo pipefail
 
-        with:
-          file: ${{ inputs.manifest-file }}
-          attribute: version
+          echo "================================================"
+          echo "PROJECT METADATA"
+          echo "================================================"
+          echo "action-utils-local is commented out."
+          echo "Using Python as a temporary alternative."
+          echo "TODO: Restore action-utils-local when available."
+          echo "Manifest: ${MANIFEST_FILE}"
 
-      - name: Read project description
-        id: read-description
-        uses: luismuma/action-utils-local/get-json-attribute@v1
+          python3 - <<'PYTHON'
+          import json
+          import os
 
-        with:
-          file: ${{ inputs.manifest-file }}
-          attribute: description
+          manifest_file = os.environ["MANIFEST_FILE"]
 
-      # 5.4 Determine artifact version
+          with open(manifest_file, encoding="utf-8") as file:
+              manifest = json.load(file)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key in ("name", "version", "description"):
+                  value = str(manifest.get(key, ""))
+                  output.write(f"{key}={value}\n")
+                  print(f"{key}: {value}")
+
+          print("Project metadata loaded successfully.")
+          PYTHON
+
+      # ------------------------------------------------------------------------
+      # 5.4 CALCULATE ARTIFACT VERSION
+      # ------------------------------------------------------------------------
+
       - name: Calculate artifact version
         id: version
         shell: bash
-
         env:
-          PROJECT_VERSION: ${{ steps.read-version.outputs.value }}
+          PROJECT_VERSION: ${{ steps.read-metadata.outputs.version }}
           SNAPSHOT_FORMAT: ${{ inputs.snapshot-format }}
           RUN_NUMBER: ${{ github.run_number }}
           IS_RELEASE: ${{ env.IS_RELEASE }}
-
         run: |
           set -euo pipefail
 
@@ -285,43 +312,67 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Artifact version: ${VERSION}"
 
-      # 5.5 Clone CDC inventory repository and fetch configurations
+      # ------------------------------------------------------------------------
+      # 5.5 CLONE CDC INVENTORY REPOSITORY
+      # ------------------------------------------------------------------------
+
       - name: Clone CDC inventory repository
         shell: bash
         env:
           GH_GIT_TOKEN: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
         run: |
           set -euo pipefail
+
           REPO_DIR="$RUNNER_TEMP/ioeu-cdc-repo-piloto-cdc-local"
           REPO_URL="https://github.com/luismuma/ioeu-cdc-repo-piloto-cdc-local.git"
 
+          echo "================================================"
+          echo "CLONE CDC INVENTORY REPOSITORY"
+          echo "================================================"
+
           if [[ -n "${GH_GIT_TOKEN:-}" ]]; then
-            git -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_GIT_TOKEN" | base64 -w 0)" clone --filter=blob:none --no-checkout "$REPO_URL" "$REPO_DIR"
+            git -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_GIT_TOKEN" | base64 -w 0)" \
+              clone --filter=blob:none --no-checkout "$REPO_URL" "$REPO_DIR"
           else
+            echo "::warning::No GitHub token available. Trying anonymous clone."
             git clone --filter=blob:none --no-checkout "$REPO_URL" "$REPO_DIR"
           fi
 
           cd "$REPO_DIR"
+
           git sparse-checkout init --no-cone
           git sparse-checkout set --no-cone \
             cdc-controller/config/inventory_connections/db_connections.yaml \
             cdc-controller/config/inventory_connections/target_connections.yaml
+
           git checkout main
 
           DEST_DIR="$GITHUB_WORKSPACE/inventory_connections"
           mkdir -p "$DEST_DIR"
+
           cp cdc-controller/config/inventory_connections/db_connections.yaml "$DEST_DIR/"
           cp cdc-controller/config/inventory_connections/target_connections.yaml "$DEST_DIR/"
 
-      # 5.6 Install YAML processing dependencies & Generate filtered database connection names
+          echo "Inventory files copied to: $DEST_DIR"
+          ls -lh "$DEST_DIR"
+
+      # ------------------------------------------------------------------------
+      # 5.6 GENERATE FILTERED DATABASE CONNECTION NAMES
+      # ------------------------------------------------------------------------
+
       - name: Generate filtered database connection names
         shell: bash
         run: |
           set -euo pipefail
+
           INVENTORY_FILE="inventory_connections/db_connections.yaml"
           JSON_FILE="config-CDC/application/cdc_input_json_content.json"
           OUTPUT_DIR="generated_inventory"
           OUTPUT_FILE="$OUTPUT_DIR/db_connection_names.yml"
+
+          echo "================================================"
+          echo "FILTER DATABASE CONNECTIONS"
+          echo "================================================"
 
           mkdir -p "$OUTPUT_DIR"
           python3 -m pip install PyYAML
@@ -332,6 +383,7 @@ jobs:
           import yaml
 
           inventory_file, json_file, output_file = sys.argv[1:]
+
           with open(json_file, encoding="utf-8") as stream:
               config = json.load(stream)
 
@@ -349,120 +401,293 @@ jobs:
               inventory = yaml.safe_load(stream) or {}
 
           connection_names = []
+
           for name, connection in inventory.items():
               if name == "defaults" or not isinstance(connection, dict):
                   continue
-              db_engine = str(connection.get("db_engine") or connection.get("BBDD_ENGINE") or "").strip().upper()
-              db_env = str(connection.get("env") or connection.get("ENV") or "").strip().upper()
-              if db_engine in engine_aliases.get(engine, set()) and db_env == env:
+
+              db_engine = str(
+                  connection.get("db_engine")
+                  or connection.get("BBDD_ENGINE")
+                  or ""
+              ).strip().upper()
+
+              db_env = str(
+                  connection.get("env")
+                  or connection.get("ENV")
+                  or ""
+              ).strip().upper()
+
+              if (
+                  db_engine in engine_aliases.get(engine, set())
+                  and db_env == env
+              ):
                   connection_names.append(name)
 
           with open(output_file, "w", encoding="utf-8") as stream:
-              yaml.safe_dump(connection_names, stream, sort_keys=False, allow_unicode=True, default_flow_style=False)
+              yaml.safe_dump(
+                  connection_names,
+                  stream,
+                  sort_keys=False,
+                  allow_unicode=True,
+                  default_flow_style=False
+              )
+
+          print(f"Database engine: {engine}")
+          print(f"Environment: {env}")
+          print(f"Matching connections: {len(connection_names)}")
+          print(f"Output file: {output_file}")
           PYTHON
 
-      # 5.7 Create main CDC ZIP archetype artifact
+          echo "Generated inventory content:"
+          cat "$OUTPUT_FILE"
+
+      # ------------------------------------------------------------------------
+      # 5.7 CREATE MAIN CDC ARCHETYPE ZIP
+      # ------------------------------------------------------------------------
+
       - name: Create CDC ZIP archetype artifact
         id: package
         shell: bash
-
         env:
-          PROJECT_NAME: ${{ steps.read-name.outputs.value }}
-
+          PROJECT_NAME: ${{ steps.read-metadata.outputs.name }}
         run: |
           set -euo pipefail
 
-          ARTIFACT_DIR="publish_artifact"
+          ARTIFACT_DIR="$GITHUB_WORKSPACE/publish_artifact"
           ZIP_FILE="${ARTIFACT_DIR}/${PROJECT_NAME}.zip"
 
-          mkdir -p "${ARTIFACT_DIR}"
-          rm -f "${ZIP_FILE}"
+          echo "================================================"
+          echo "CREATE CDC ARCHETYPE ZIP"
+          echo "================================================"
 
-          # Include CDC archetype files and templates, exclude git/workflows/output
-          zip -r "${ZIP_FILE}" . \
+          mkdir -p "$ARTIFACT_DIR"
+          rm -f "$ZIP_FILE"
+
+          zip -r "$ZIP_FILE" . \
             -x ".git/*" \
-                 ".github/*" \
-                 ".gitignore" \
-                 "publish_artifact/*"
+               ".github/*" \
+               ".gitignore" \
+               "publish_artifact/*"
 
-          test -s "${ZIP_FILE}"
-          unzip -t "${ZIP_FILE}"
+          test -s "$ZIP_FILE"
 
           echo "artifact=${ZIP_FILE}" >> "$GITHUB_OUTPUT"
-          echo "Created archetype artifact: ${ZIP_FILE}"
-          ls -lh "${ZIP_FILE}"
+          echo "CDC archetype ZIP created successfully."
 
-      # 5.8 Create specific ZIP archive with config and generated inventory
+      # ------------------------------------------------------------------------
+      # 5.8 CREATE SPECIFIC CONFIGURATION ZIP
+      # ------------------------------------------------------------------------
+
       - name: Create specific configuration ZIP archive
+        id: specific-package
         shell: bash
         run: |
           set -euo pipefail
-          
-          SPECIFIC_ZIP="publish_artifact/cdc-deployment-package.zip"
-          
+
+          ARTIFACT_DIR="$GITHUB_WORKSPACE/publish_artifact"
+          SPECIFIC_ZIP="$ARTIFACT_DIR/cdc-deployment-package.zip"
+
+          echo "================================================"
+          echo "CREATE SPECIFIC CONFIGURATION ZIP"
+          echo "================================================"
+
           if [[ ! -f "config-CDC/application/cdc_input_json_content.json" ]]; then
-            echo "::error::Falta el fichero cdc_input_json_content.json"
+            echo "::error::Missing cdc_input_json_content.json"
             exit 1
           fi
-          
+
           if [[ ! -f "generated_inventory/db_connection_names.yml" ]]; then
-            echo "::error::Falta el fichero db_connection_names.yml"
+            echo "::error::Missing db_connection_names.yml"
             exit 1
           fi
-          
-          zip "$SPECIFIC_ZIP" config-CDC/application/cdc_input_json_content.json generated_inventory/db_connection_names.yml
-          echo "ZIP específico creado con éxito: $SPECIFIC_ZIP"
-          ls -lh "$SPECIFIC_ZIP"
 
-      # 5.9 Publish SNAPSHOT to Azure Artifacts
-      - name: Publish Snapshot Artifact
+          rm -f "$SPECIFIC_ZIP"
+
+          zip -j "$SPECIFIC_ZIP" \
+            config-CDC/application/cdc_input_json_content.json \
+            generated_inventory/db_connection_names.yml
+
+          echo "Specific configuration ZIP created successfully."
+
+      # ------------------------------------------------------------------------
+      # 5.9 VERIFY ZIP FILES AND PRINT ABSOLUTE PATHS AND CONTENTS
+      # ------------------------------------------------------------------------
+
+      - name: Inspect ZIP artifacts
+        shell: bash
+        env:
+          PROJECT_NAME: ${{ steps.read-metadata.outputs.name }}
+        run: |
+          set -euo pipefail
+
+          ARTIFACT_DIR="$GITHUB_WORKSPACE/publish_artifact"
+          MAIN_ZIP="$ARTIFACT_DIR/${PROJECT_NAME}.zip"
+          SPECIFIC_ZIP="$ARTIFACT_DIR/cdc-deployment-package.zip"
+
+          echo
+          echo "================================================"
+          echo "ZIP ARTIFACT INSPECTION"
+          echo "================================================"
+          echo "Runner workspace: $GITHUB_WORKSPACE"
+          echo "Artifact directory: $ARTIFACT_DIR"
+          echo
+
+          for ZIP_FILE in "$MAIN_ZIP" "$SPECIFIC_ZIP"; do
+            if [[ ! -f "$ZIP_FILE" ]]; then
+              echo "::error::ZIP file not found: $ZIP_FILE"
+              exit 1
+            fi
+
+            echo "------------------------------------------------"
+            echo "ZIP FILE: $(basename "$ZIP_FILE")"
+            echo "ABSOLUTE PATH: $(realpath "$ZIP_FILE")"
+            echo "SIZE:"
+            ls -lh "$ZIP_FILE"
+            echo
+            echo "INTEGRITY TEST:"
+            unzip -t "$ZIP_FILE"
+            echo
+            echo "CONTENTS:"
+            unzip -Z1 "$ZIP_FILE"
+            echo
+          done
+
+          echo "================================================"
+          echo "ALL ZIP FILES VERIFIED"
+          echo "================================================"
+
+          echo "Files ready for upload:"
+          ls -lh "$ARTIFACT_DIR"/*.zip
+
+      # ------------------------------------------------------------------------
+      # 5.10 PUBLISH SNAPSHOT TO AZURE ARTIFACTS
+      #
+      # Original action retained as a comment.
+      # TODO: Restore or implement the real Azure publication action.
+      # ------------------------------------------------------------------------
+
+      # - name: Publish Snapshot Artifact
+      #   if: env.IS_RELEASE != 'true'
+      #   uses: luismuma/action-azure-artifacts-local/publish-package@v1
+      #   with:
+      #     feed: snapshots
+      #     packageName: ${{ steps.read-metadata.outputs.name }}
+      #     version: ${{ steps.version.outputs.version }}
+      #     path: publish_artifact
+      #     description: >-
+      #       ${{ steps.read-metadata.outputs.name }}
+      #       ${{ steps.version.outputs.version }}
+      #       CDC snapshot
+      #       ${{ steps.read-metadata.outputs.description }}
+      #     azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+
+      - name: Publish Snapshot Artifact - Pending Implementation
         if: env.IS_RELEASE != 'true'
+        shell: bash
+        env:
+          PACKAGE_NAME: ${{ steps.read-metadata.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_DESCRIPTION: ${{ steps.read-metadata.outputs.description }}
+        run: |
+          echo "================================================"
+          echo "AZURE ARTIFACTS - SNAPSHOT"
+          echo "================================================"
+          echo "Package: ${PACKAGE_NAME}"
+          echo "Version: ${PACKAGE_VERSION}"
+          echo "Description: ${PACKAGE_DESCRIPTION}"
+          echo "Feed: snapshots"
+          echo "Directory: $GITHUB_WORKSPACE/publish_artifact/"
+          echo ""
+          echo "ACTION REQUIRED:"
+          echo "Implement or restore the Azure Artifacts publishing action."
+          echo "WARNING: No package was uploaded to Azure Artifacts."
 
-        uses: luismuma/action-azure-artifacts-local/publish-package@v1
+      # ------------------------------------------------------------------------
+      # 5.11 PUBLISH RELEASE TO AZURE ARTIFACTS
+      #
+      # Original action retained as a comment.
+      # TODO: Restore or implement the real Azure publication action.
+      # ------------------------------------------------------------------------
 
-        with:
-          feed: snapshots
-          packageName: ${{ steps.read-name.outputs.value }}
-          version: ${{ steps.version.outputs.version }}
-          path: publish_artifact
-          description: >-
-            ${{ steps.read-name.outputs.value }}
-            ${{ steps.version.outputs.version }}
-            CDC snapshot
-            ${{ steps.read-description.outputs.value }}
-          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
+      # - name: Publish Release Artifact
+      #   if: env.IS_RELEASE == 'true'
+      #   uses: luismuma/action-azure-artifacts-local/publish-package@v1
+      #   with:
+      #     feed: releases
+      #     packageName: ${{ steps.read-metadata.outputs.name }}
+      #     version: ${{ steps.version.outputs.version }}
+      #     path: publish_artifact
+      #     description: >-
+      #       ${{ steps.read-metadata.outputs.name }}
+      #       ${{ steps.version.outputs.version }}
+      #       CDC release
+      #       ${{ steps.read-metadata.outputs.description }}
+      #     azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
 
-      # 5.10 Publish RELEASE to Azure Artifacts
-      - name: Publish Release Artifact
+      - name: Publish Release Artifact - Pending Implementation
         if: env.IS_RELEASE == 'true'
+        shell: bash
+        env:
+          PACKAGE_NAME: ${{ steps.read-metadata.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_DESCRIPTION: ${{ steps.read-metadata.outputs.description }}
+        run: |
+          echo "================================================"
+          echo "AZURE ARTIFACTS - RELEASE"
+          echo "================================================"
+          echo "Package: ${PACKAGE_NAME}"
+          echo "Version: ${PACKAGE_VERSION}"
+          echo "Description: ${PACKAGE_DESCRIPTION}"
+          echo "Feed: releases"
+          echo "Directory: $GITHUB_WORKSPACE/publish_artifact/"
+          echo ""
+          echo "ACTION REQUIRED:"
+          echo "Implement or restore the Azure Artifacts publishing action."
+          echo "WARNING: No package was uploaded to Azure Artifacts."
 
-        uses: luismuma/action-azure-artifacts-local/publish-package@v1
+      # ------------------------------------------------------------------------
+      # 5.12 UPLOAD ZIP FILES TO GITHUB ACTIONS ARTIFACTS
+      # ------------------------------------------------------------------------
 
-        with:
-          feed: releases
-          packageName: ${{ steps.read-name.outputs.value }}
-          version: ${{ steps.version.outputs.version }}
-          path: publish_artifact
-          description: >-
-            ${{ steps.read-name.outputs.value }}
-            ${{ steps.version.outputs.version }}
-            CDC release
-            ${{ steps.read-description.outputs.value }}
-          azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
-
-      # 5.11 Upload ZIP packages to GitHub Actions workflow artifacts
-      - name: Upload ZIP as workflow artifact
+      - name: Upload ZIP files as GitHub Actions artifact
+        id: upload-artifacts
         uses: actions/upload-artifact@v4
-
         with:
-          name: ${{ steps.read-name.outputs.value }}-${{ steps.version.outputs.version }}
-          path: publish_artifact/
+          name: ${{ steps.read-metadata.outputs.name }}-${{ steps.version.outputs.version }}
+          path: publish_artifact/*.zip
           if-no-files-found: error
           retention-days: 30
+
+      # ------------------------------------------------------------------------
+      # 5.13 REPORT UPLOAD LOCATION
+      # ------------------------------------------------------------------------
+
+      - name: Report uploaded artifact
+        shell: bash
+        env:
+          PROJECT_NAME: ${{ steps.read-metadata.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          echo "================================================"
+          echo "GITHUB ACTIONS ARTIFACT REPORT"
+          echo "================================================"
+          echo "Artifact name: ${PROJECT_NAME}-${PACKAGE_VERSION}"
+          echo "Runner directory: $GITHUB_WORKSPACE/publish_artifact/"
+          echo
+          echo "ZIP files included in the uploaded artifact:"
+          find "$GITHUB_WORKSPACE/publish_artifact" -maxdepth 1 -type f -name '*.zip' -print
+          echo
+          echo "The ZIP files are attached to this workflow run."
+          echo "Open GitHub Actions > this workflow run > Artifacts to download them."
+          echo "Retention configured: 30 days."
 
   # ============================================================================
   # 6. REVOKE CENTRALIZED TOKENS
   # ============================================================================
+
   revoke-tokens:
     name: Revoke Centralized Tokens
 
