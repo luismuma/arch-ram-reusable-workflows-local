@@ -3,9 +3,8 @@
 # CDC Merge Commit Workflow.
 #
 # Output:
-#   - CDC archetype ZIP
-#   - Specific Configuration ZIP
-#   - GitHub Actions workflow artifact containing both ZIP files
+#   - Single CDC archetype ZIP (including specific configuration and inventories)
+#   - GitHub Actions workflow artifact containing the single ZIP file
 #
 # Azure Artifacts publication is temporarily disabled.
 # action-utils-local is temporarily replaced with Python.
@@ -173,7 +172,7 @@ jobs:
       GH_TOKEN_ENCRYPTION_PASSPHRASE: ${{ secrets.GH_TOKEN_ENCRYPTION_PASSPHRASE }}
 
   # ============================================================================
-  # 5. LOAD INVENTORY AND CREATE ZIP ARTIFACTS
+  # 5. LOAD INVENTORY AND CREATE SINGLE ZIP ARTIFACT
   # ============================================================================
 
   load-cdc-inventory:
@@ -249,7 +248,7 @@ jobs:
 
           echo "================================================"
 
-     
+      
       # ------------------------------------------------------------------------
       # 5.2 CHECKOUT MERGED CODE
       # ------------------------------------------------------------------------
@@ -260,33 +259,10 @@ jobs:
           # token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN }}
           token: ${{ steps.decrypt.outputs.token || secrets.RAM_GITHUB_GIT_TOKEN || github.token }}
           fetch-depth: 0
+
       # ------------------------------------------------------------------------
       # 5.3 READ PROJECT METADATA
-      # Original action-utils-local calls preserved as comments.
-      # Python is used temporarily until the action is available.
       # ------------------------------------------------------------------------
-
-      # - name: Read project name
-      #   id: read-name
-      #   uses: luismuma/action-utils-local/get-json-attribute@v1
-      #   with:
-      #     file: ${{ inputs.manifest-file }}
-      #     attribute: name
-      #
-      # - name: Read project version
-      #   id: read-version
-      #   uses: luismuma/action-utils-local/get-json-attribute@v1
-      #   with:
-      #     file: ${{ inputs.manifest-file }}
-      #     attribute: version
-      #
-      # - name: Read project description
-      #   id: read-description
-      #   uses: luismuma/action-utils-local/get-json-attribute@v1
-      #   with:
-      #     file: ${{ inputs.manifest-file }}
-      #     attribute: description
-
       - name: Read project metadata
         id: read-metadata
         shell: bash
@@ -477,10 +453,14 @@ jobs:
           cat "$OUTPUT_FILE"
 
       # ------------------------------------------------------------------------
-      # 5.7 CREATE MAIN CDC ARCHETYPE ZIP
+      # 5.7 CREATE SINGLE UNIQUE CDC ARCHETYPE ZIP (MODIFICADO)
+      # ------------------------------------------------------------------------
+      # NUEVO: Este paso genera el ÚNICO archivo ZIP final. Como ya incluye
+      # toda la estructura del workspace (incluyendo config-CDC y generated_inventory),
+      # ya no es necesario un segundo paquete ZIP separado.
       # ------------------------------------------------------------------------
 
-      - name: Create CDC ZIP archetype artifact
+      - name: Create single CDC ZIP archetype artifact
         id: package
         shell: bash
         env:
@@ -492,7 +472,7 @@ jobs:
           ZIP_FILE="${ARTIFACT_DIR}/${PROJECT_NAME}.zip"
 
           echo "================================================"
-          echo "CREATE CDC ARCHETYPE ZIP"
+          echo "CREATE SINGLE CDC ARCHETYPE ZIP"
           echo "================================================"
 
           mkdir -p "$ARTIFACT_DIR"
@@ -507,48 +487,19 @@ jobs:
           test -s "$ZIP_FILE"
 
           echo "artifact=${ZIP_FILE}" >> "$GITHUB_OUTPUT"
-          echo "CDC archetype ZIP created successfully."
+          echo "Single CDC archetype ZIP created successfully."
+
+      # (ELIMINADO AQUÍ): El paso 5.8 anterior que creaba el segundo ZIP ('cdc-deployment-package.zip')
+      # ha sido eliminado por completo para cumplir con el requisito de generar 1 solo ZIP.
 
       # ------------------------------------------------------------------------
-      # 5.8 CREATE SPECIFIC CONFIGURATION ZIP
+      # 5.9 INSPECT SINGLE ZIP ARTIFACT (MODIFICADO)
+      # ------------------------------------------------------------------------
+      # NUEVO: Se adapta la comprobación para inspeccionar únicamente el único 
+      # archivo ZIP generado, evitando referencias a ficheros inexistentes.
       # ------------------------------------------------------------------------
 
-      - name: Create specific configuration ZIP archive
-        id: specific-package
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ARTIFACT_DIR="$GITHUB_WORKSPACE/publish_artifact"
-          SPECIFIC_ZIP="$ARTIFACT_DIR/cdc-deployment-package.zip"
-
-          echo "================================================"
-          echo "CREATE SPECIFIC CONFIGURATION ZIP"
-          echo "================================================"
-
-          if [[ ! -f "config-CDC/application/cdc_input_json_content.json" ]]; then
-            echo "::error::Missing cdc_input_json_content.json"
-            exit 1
-          fi
-
-          if [[ ! -f "generated_inventory/db_connection_names.yml" ]]; then
-            echo "::error::Missing db_connection_names.yml"
-            exit 1
-          fi
-
-          rm -f "$SPECIFIC_ZIP"
-
-          zip -j "$SPECIFIC_ZIP" \
-            config-CDC/application/cdc_input_json_content.json \
-            generated_inventory/db_connection_names.yml
-
-          echo "Specific configuration ZIP created successfully."
-
-      # ------------------------------------------------------------------------
-      # 5.9 VERIFY ZIP FILES AND PRINT ABSOLUTE PATHS AND CONTENTS
-      # ------------------------------------------------------------------------
-
-      - name: Inspect ZIP artifacts
+      - name: Inspect single ZIP artifact
         shell: bash
         env:
           PROJECT_NAME: ${{ steps.read-metadata.outputs.name }}
@@ -557,64 +508,43 @@ jobs:
 
           ARTIFACT_DIR="$GITHUB_WORKSPACE/publish_artifact"
           MAIN_ZIP="$ARTIFACT_DIR/${PROJECT_NAME}.zip"
-          SPECIFIC_ZIP="$ARTIFACT_DIR/cdc-deployment-package.zip"
 
           echo
           echo "================================================"
-          echo "ZIP ARTIFACT INSPECTION"
+          echo "SINGLE ZIP ARTIFACT INSPECTION"
           echo "================================================"
           echo "Runner workspace: $GITHUB_WORKSPACE"
           echo "Artifact directory: $ARTIFACT_DIR"
           echo
 
-          for ZIP_FILE in "$MAIN_ZIP" "$SPECIFIC_ZIP"; do
-            if [[ ! -f "$ZIP_FILE" ]]; then
-              echo "::error::ZIP file not found: $ZIP_FILE"
-              exit 1
-            fi
+          if [[ ! -f "$MAIN_ZIP" ]]; then
+            echo "::error::ZIP file not found: $MAIN_ZIP"
+            exit 1
+          fi
 
-            echo "------------------------------------------------"
-            echo "ZIP FILE: $(basename "$ZIP_FILE")"
-            echo "ABSOLUTE PATH: $(realpath "$ZIP_FILE")"
-            echo "SIZE:"
-            ls -lh "$ZIP_FILE"
-            echo
-            echo "INTEGRITY TEST:"
-            unzip -t "$ZIP_FILE"
-            echo
-            echo "CONTENTS:"
-            unzip -Z1 "$ZIP_FILE"
-            echo
-          done
+          echo "------------------------------------------------"
+          echo "ZIP FILE: $(basename "$MAIN_ZIP")"
+          echo "ABSOLUTE PATH: $(realpath "$MAIN_ZIP")"
+          echo "SIZE:"
+          ls -lh "$MAIN_ZIP"
+          echo
+          echo "INTEGRITY TEST:"
+          unzip -t "$MAIN_ZIP"
+          echo
+          echo "CONTENTS:"
+          unzip -Z1 "$MAIN_ZIP"
+          echo
 
           echo "================================================"
-          echo "ALL ZIP FILES VERIFIED"
+          echo "SINGLE ZIP FILE VERIFIED"
           echo "================================================"
 
-          echo "Files ready for upload:"
+          echo "File ready for upload:"
           ls -lh "$ARTIFACT_DIR"/*.zip
 
       # ------------------------------------------------------------------------
       # 5.10 PUBLISH SNAPSHOT TO AZURE ARTIFACTS
-      #
-      # Original action retained as a comment.
-      # TODO: Restore or implement the real Azure publication action.
       # ------------------------------------------------------------------------
-
-      # - name: Publish Snapshot Artifact
-      #   if: env.IS_RELEASE != 'true'
-      #   uses: luismuma/action-azure-artifacts-local/publish-package@v1
-      #   with:
-      #     feed: snapshots
-      #     packageName: ${{ steps.read-metadata.outputs.name }}
-      #     version: ${{ steps.version.outputs.version }}
-      #     path: publish_artifact
-      #     description: >-
-      #       ${{ steps.read-metadata.outputs.name }}
-      #       ${{ steps.version.outputs.version }}
-      #       CDC snapshot
-      #       ${{ steps.read-metadata.outputs.description }}
-      #     azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
 
       - name: Publish Snapshot Artifact - Pending Implementation
         if: env.IS_RELEASE != 'true'
@@ -639,25 +569,7 @@ jobs:
 
       # ------------------------------------------------------------------------
       # 5.11 PUBLISH RELEASE TO AZURE ARTIFACTS
-      #
-      # Original action retained as a comment.
-      # TODO: Restore or implement the real Azure publication action.
       # ------------------------------------------------------------------------
-
-      # - name: Publish Release Artifact
-      #   if: env.IS_RELEASE == 'true'
-      #   uses: luismuma/action-azure-artifacts-local/publish-package@v1
-      #   with:
-      #     feed: releases
-      #     packageName: ${{ steps.read-metadata.outputs.name }}
-      #     version: ${{ steps.version.outputs.version }}
-      #     path: publish_artifact
-      #     description: >-
-      #       ${{ steps.read-metadata.outputs.name }}
-      #       ${{ steps.version.outputs.version }}
-      #       CDC release
-      #       ${{ steps.read-metadata.outputs.description }}
-      #     azure-devops-pat: ${{ secrets.AZURE_ARTIFACTS_PW }}
 
       - name: Publish Release Artifact - Pending Implementation
         if: env.IS_RELEASE == 'true'
@@ -681,10 +593,10 @@ jobs:
           echo "WARNING: No package was uploaded to Azure Artifacts."
 
       # ------------------------------------------------------------------------
-      # 5.12 UPLOAD ZIP FILES TO GITHUB ACTIONS ARTIFACTS
+      # 5.12 UPLOAD SINGLE ZIP FILE TO GITHUB ACTIONS ARTIFACTS
       # ------------------------------------------------------------------------
 
-      - name: Upload ZIP files as GitHub Actions artifact
+      - name: Upload single ZIP file as GitHub Actions artifact
         id: upload-artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -711,10 +623,10 @@ jobs:
           echo "Artifact name: ${PROJECT_NAME}-${PACKAGE_VERSION}"
           echo "Runner directory: $GITHUB_WORKSPACE/publish_artifact/"
           echo
-          echo "ZIP files included in the uploaded artifact:"
+          echo "ZIP file included in the uploaded artifact:"
           find "$GITHUB_WORKSPACE/publish_artifact" -maxdepth 1 -type f -name '*.zip' -print
           echo
-          echo "The ZIP files are attached to this workflow run."
+          echo "The ZIP file is attached to this workflow run."
           echo "Open GitHub Actions > this workflow run > Artifacts to download them."
           echo "Retention configured: 30 days."
 
