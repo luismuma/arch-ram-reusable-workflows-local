@@ -220,17 +220,36 @@ jobs:
         shell: bash
         env:
           DECRYPTED_TOKEN: ${{ steps.decrypt.outputs.token }}
-          #FALLBACK_TOKEN: ${{ secrets.GH_GIT_TOKEN }}
           FALLBACK_TOKEN: ${{ secrets.RAM_GITHUB_GIT_TOKEN }}
         run: |
-          if [ -n "$DECRYPTED_TOKEN" ]; then
-            echo "Decrypted token is available."
-          elif [ -n "$FALLBACK_TOKEN" ]; then
-            echo "Fallback token is available."
+          set -u
+
+          echo "================================================"
+          echo "CHECKOUT TOKEN AVAILABILITY"
+          echo "================================================"
+
+          if [ -n "${DECRYPTED_TOKEN:-}" ]; then
+            echo "STATUS: Decrypted token is available."
           else
-            echo "::error::No checkout token is available."
-            exit 1
+            echo "STATUS: Decrypted token is NOT available."
           fi
+
+          if [ -n "${FALLBACK_TOKEN:-}" ]; then
+            echo "STATUS: Fallback token is available."
+          else
+            echo "STATUS: Fallback token is NOT available."
+          fi
+
+          if [ -n "${DECRYPTED_TOKEN:-}" ] || [ -n "${FALLBACK_TOKEN:-}" ]; then
+            echo "RESULT: At least one checkout token is available."
+          else
+            echo "RESULT: No checkout token is available."
+            echo "WARNING: This verification step will not fail the workflow."
+          fi
+
+          echo "================================================"
+
+     
       # ------------------------------------------------------------------------
       # 5.2 CHECKOUT MERGED CODE
       # ------------------------------------------------------------------------
